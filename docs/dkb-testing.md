@@ -36,6 +36,21 @@ build\dkb100\dkb.exe
 Run it from inside the repository: it finds the shader translator (`build\xlate\totk_xlate.exe`) by looking up from
 its own folder. The first run translates every shader it meets and is slow; later runs use the cache.
 
+Prepare the shaders once (optional, but it removes most of the freezes on a first visit to an area): the game's own
+shader files hold about 16,600 shader stages, and translating one the first time a draw needs it takes about 35 ms, with
+the draw waiting. These two steps translate them all up front, from your own game files:
+
+```
+.venv\Scripts\python tools\dkb_shader_census.py --version dkb100 --out build\dkb100
+build\dkb100\dkb.exe --prepare-shaders
+```
+
+The first reads the extracted RomFS and writes `seed-nvn2.bin` (about 175 MiB) next to `dkb.exe`; the second lowers and
+translates every stage with the default answers (every texture a 2D texture, float vertex inputs and colour outputs)
+into the shader cache (about 1.3 GB, 80 seconds on 20 threads). A shader whose draws bind other types (3D or cube
+textures, integer attributes) is still translated on first use, and play records it. Stages in the agl shader packages
+and the executable modules are not in the pack yet.
+
 Useful settings, as environment variables (`set NAME=value` in the same Command Prompt):
 
 | Setting | Effect |
