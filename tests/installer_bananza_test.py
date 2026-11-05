@@ -43,6 +43,7 @@ class InstallerTest(unittest.TestCase):
         (self.root / 'recomp/patches-dkb100.txt').write_text('# synthetic patch table')
         (self.root / 'tools/build_xlate.py').write_text("def identity(): return 'synthetic-translator-id'\n")
         shutil.copyfile(ROOT / 'tools/dkb_pack_romfs.py', self.root / 'tools/dkb_pack_romfs.py')
+        shutil.copyfile(ROOT / 'tools/dkb_shader_census.py', self.root / 'tools/dkb_shader_census.py')
         (self.root / 'tools/romfs_index.py').write_text('# synthetic fixture')
         (self.root / 'recomp/gen.py').write_text('''
 import json, pathlib, sys
@@ -87,13 +88,17 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
 
     def run_install(self, fail=None):
         original = b.run_tool
-        def tool(ctx, step, command, env=None):
+        def tool(ctx, step, command, env=None, cwd=None):
             self.calls.append((step, list(map(str, command))))
             if fail:
                 fail(ctx, step, command)
+            if step == 'dkb_shaders':   # the census and the translation run for real only in a full install
+                if str(command[-1]) == '--prepare-shaders':
+                    (ctx.dest / 'shader-cache').mkdir(exist_ok=True)
+                return
             if step == 'dkb_verify':
                 return
-            return original(ctx, step, command, env)
+            return original(ctx, step, command, env, cwd)
         output = io.StringIO()
         with patch.object(b.layouts, 'find', return_value=self.layout), patch.object(b.Check, 'host'), \
                 patch.object(b, 'run_tool', side_effect=tool), contextlib.redirect_stdout(output):
@@ -138,7 +143,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(code, 0, events)
         state = b.statefile.load(self.dest, b.STATE)
         self.assertEqual(state['game'], 'dkb100')
-        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_verify'})
+        self.assertEqual(set(state['steps']), {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_verify'})
         self.assertEqual((self.dest/'exefs/main').read_bytes(), (self.exefs/'main').read_bytes())
         self.assertTrue((self.dest/('dkb'+b.EXE)).is_file())
         self.assertFalse((self.dest/'build.ninja').exists())
@@ -148,7 +153,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(code, 0, events)
         self.assertEqual(self.calls, [])
         self.assertEqual({e['step'] for e in events if e['type']=='step' and e['state']=='skipped'},
-                         {'dkb_data','dkb_translator','lift','compile','dkb_verify'})
+                         {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_verify'})
 
     def test_cancel_before_compile_resumes_without_redoing_pack(self):
         def cancel(ctx, step, command):
@@ -308,7 +313,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         (self.romfs/'other.bin').write_bytes(b'a changed source')
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
-        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_verify'])
+        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_verify'])
 
     def test_source_mutation_during_pack_is_not_installed(self):
         def mutate(ctx, step, command):

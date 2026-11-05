@@ -207,6 +207,7 @@
  "dkb.patches_missing": "В сгенерированном коде нет обязательной таблицы патчей Bananza. Сборка остановлена.",
  "step.dkb_data": "Копирование ExeFS и проверка упакованной RomFS",
  "step.dkb_translator": "Подготовка транслятора шейдеров",
+ "step.dkb_shaders": "Трансляция шейдеров игры (один раз, несколько минут)",
  "step.dkb_verify": "Проверка готовой установки",
  "phase.check.dkb_base": "Проверка контрольных сумм ExeFS версии 1.0.0",
  "phase.check.dkb_hash": "Проверка исходных файлов RomFS",
@@ -215,5 +216,6 @@
  "phase.dkb_translator.dkb_run": "Сборка транслятора шейдеров",
  "phase.lift.dkb_run": "Трансляция main и sdk с патчами Bananza",
  "phase.compile.dkb_run": "Компиляция dkb.exe",
+ "phase.dkb_shaders.dkb_run": "Трансляция шейдеров из файлов игры",
  "phase.dkb_verify.dkb_run": "Запуск самопроверок установленной программы"
 }

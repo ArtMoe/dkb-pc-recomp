@@ -207,6 +207,7 @@
  "dkb.patches_missing": "The generated code lacks the required Bananza patch table. Setup stopped before compiling.",
  "step.dkb_data": "Copying ExeFS and verifying packed RomFS",
  "step.dkb_translator": "Preparing the shader translator",
+ "step.dkb_shaders": "Translating the game's shaders (once, a few minutes)",
  "step.dkb_verify": "Checking the completed installation",
  "phase.check.dkb_base": "Checking the base 1.0.0 ExeFS checksums",
  "phase.check.dkb_hash": "Checking the RomFS source files",
@@ -215,5 +216,6 @@
  "phase.dkb_translator.dkb_run": "Building the shader translator",
  "phase.lift.dkb_run": "Translating main and sdk with the Bananza patches",
  "phase.compile.dkb_run": "Compiling dkb.exe",
+ "phase.dkb_shaders.dkb_run": "Translating the shader stages found in the game files",
  "phase.dkb_verify.dkb_run": "Running the installed program's self-checks"
 }

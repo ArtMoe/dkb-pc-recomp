@@ -74,7 +74,7 @@ def plain_tree(root):
 def plain_destination(dest, dlls=()):
     # profile/ and caches belong to the player and are never traversed or written by setup.
     files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'totk.ini', 'totk.ini.tmp',
-             'romfs-index.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
+             'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
     for name in ('exefs', 'romfs', *files, *(name + '.setup-part' for name in files)):
         plain_tree(dest / name)
 
@@ -248,6 +248,7 @@ def preflight(layout, options, dest, temp, rep):
         romfs_size = sum(e['size'] + 15 for e in files)
     missing = [p for p in (layout.clang, layout.ninja, layout.recomp / 'gen.py',
                            layout.recomp / 'patches-dkb100.txt', layout.tools / 'dkb_pack_romfs.py',
+                           layout.tools / 'dkb_shader_census.py',
                            layout.runtime / 'nvn2_lower.cpp', layout.tools / 'data' / 'expected-dkb100.json')
                if not p.is_file()]
     if layout.deps:
@@ -336,14 +337,14 @@ def lock_temp(temp):
     return stream
 
 
-def run_tool(ctx, step, command, env=None):
+def run_tool(ctx, step, command, env=None, cwd=None):
     plain_outputs(ctx)
     log = ctx.temp / 'logs' / f'{step}.log'
     ensure_plain(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     ctx.reporter.progress(step, 'dkb_run', force=True)
     with log.open('w', encoding='utf-8') as out:
-        proc = subprocess.Popen(list(map(str, command)), cwd=ctx.layout.root, stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen(list(map(str, command)), cwd=cwd or ctx.layout.root, stdin=subprocess.DEVNULL,
                                 stdout=out, stderr=subprocess.STDOUT,
                                 env=dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **(env or {})),
                                 start_new_session=os.name != 'nt')
@@ -570,6 +571,31 @@ class Compile(Step):
         return {'sha256': sha256(ctx.dest / ('dkb' + EXE)), 'index_sha256': sha256(ctx.dest / 'romfs-index.bin')}
 
 
+class Shaders(Step):
+    """Translate every shader stage in the game's files into the shader cache, so no draw waits for a first translation.
+
+    tools/dkb_shader_census.py lists the stages (RomFS) into seed-nvn2.bin and dkb.exe --prepare-shaders lowers and
+    translates them. The cache belongs to the player and survives later steps; the 187 MiB pack is removed again."""
+    id = 'dkb_shaders'
+
+    def key(self, ctx):
+        return digest(ctx.keys['compile'], ctx.keys['dkb_translator'], ctx.keys['dkb_data'],
+                      sha256(ctx.layout.tools / 'dkb_shader_census.py'))
+
+    def current(self, ctx, record):
+        return record.get('prepared') is True and (ctx.dest / 'shader-cache').exists()
+
+    def run(self, ctx):
+        pack = ctx.dest / 'seed-nvn2.bin'
+        run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.tools / 'dkb_shader_census.py', '--version', GAME,
+                                '--romfs', ctx.dest / 'romfs', '--out', ctx.dest])
+        try:
+            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--prepare-shaders'], cwd=ctx.dest)
+        finally:
+            pack.unlink(missing_ok=True)
+        return {'prepared': True}
+
+
 class Prepare(Step):
     id = 'dkb_verify'
 
@@ -599,7 +625,7 @@ class Cleanup(Step):
 
 
 def all_steps():
-    return [Check(), Data(), Translator(), Lift(), Compile(), Prepare(), Cleanup()]
+    return [Check(), Data(), Translator(), Lift(), Compile(), Shaders(), Prepare(), Cleanup()]
 
 
 def cancel(*_):
