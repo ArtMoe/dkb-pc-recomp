@@ -2816,7 +2816,31 @@ typedef struct {
     N2Pat pat[N2_PATS];
     int npat;
     volatile int64_t next, done, translated, variants, failed, unlowered;
+    PlatMutex lock;                                        // guards prp
+    uint8_t *prp;                                          // shader-prepared.bin records (PRP_REC bytes), one per translation
+    size_t prp_n, prp_cap;
 } N2Prep;
+
+// The variant just resolved, for shader-prepared.bin: the driver pipeline libraries of everything listed are built after
+// the translation (vk_pipeline.c, lb_warm_prepared), so a draw finds them in the driver's cache. prio 0: a stage with the
+// default answers, 1: an integer-attribute variant.
+static void n2_note(N2Prep *p, int stage, int prio, const GfxShader *s) {
+    plat_mutex_lock(&p->lock);
+    if (p->prp_n == p->prp_cap) {
+        size_t cap = p->prp_cap ? p->prp_cap * 2 : 4096;
+        uint8_t *t = realloc(p->prp, cap * PRP_REC);
+        if (!t) {
+            plat_mutex_unlock(&p->lock);
+            return;
+        }
+        p->prp = t, p->prp_cap = cap;
+    }
+    uint8_t *r = p->prp + p->prp_n++ * PRP_REC;
+    memset(r, 0, PRP_REC);
+    r[0] = (uint8_t)(stage < 6 ? stage : 0), r[1] = (uint8_t)prio;
+    memcpy(r + 4, s->iid, 32);
+    plat_mutex_unlock(&p->lock);
+}
 
 static void n2_add_pattern(N2Prep *p, const uint8_t attr[16]) {
     static const uint8_t zero[16];
@@ -2856,13 +2880,18 @@ static void n2_worker(void *arg) {
         const GfxShader *s = gfx_shader_get((int)st, nctl, ncode, length, NULL, &a);
         if (!s) plat_inc64(&p->failed);
         else if ((uint64_t)n_xlated != x0) plat_inc64(&p->translated);
+        if (s) n2_note(p, (int)st, 0, s);
         if (s && st == GFX_STAGE_VS)
             for (int k = 0; k < p->npat; k++) {
                 GfxShaderAnswers b = a;
                 memcpy(b.attr_type, p->pat[k].attr, sizeof p->pat[k].attr);
                 x0 = (uint64_t)n_xlated;
-                if (!gfx_shader_get((int)st, nctl, ncode, length, NULL, &b)) plat_inc64(&p->failed);
-                else if ((uint64_t)n_xlated != x0) plat_inc64(&p->variants);
+                const GfxShader *v = gfx_shader_get((int)st, nctl, ncode, length, NULL, &b);
+                if (!v) plat_inc64(&p->failed);
+                else {
+                    if ((uint64_t)n_xlated != x0) plat_inc64(&p->variants);
+                    if (memcmp(v->iid, s->iid, 32)) n2_note(p, (int)st, 1, v);   // the same id as the default: listed already
+                }
             }
         plat_inc64(&p->done);
     }
@@ -2885,7 +2914,7 @@ static int prepare_nvn2(const char *path, const char *dir, int threads, int proc
     fclose(f);
     uint32_t count;
     memcpy(&count, buf + 8, 4);
-    N2Prep p = {.rec = calloc(count + 1, sizeof *p.rec)};
+    N2Prep p = {.rec = calloc(count + 1, sizeof *p.rec), .lock = PLAT_MUTEX_INIT};
     for (size_t i = 0; i < sizeof n2_builtin_patterns / sizeof *n2_builtin_patterns; i++) n2_add_pattern(&p, n2_builtin_patterns[i]);
     {   // patterns this machine's play recorded
         char rec_path[PATH_CAP + 32];
@@ -2922,6 +2951,29 @@ static int prepare_nvn2(const char *path, const char *dir, int threads, int proc
             rt_log("gfx_shader: prepare: NVN 2 seed %lld of %zu stages, %lld translated, %.0f ms", (long long)p.done, p.n,
                    (long long)p.translated, (double)plat_now_ms() - t0);
     svc_set_limit(svc_runtime_limit());
+    {   // shader-prepared.bin: one record per input id, default variants first
+        char out[PATH_CAP + 32];
+        snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);
+        size_t u = 0;
+        uint8_t *recs = calloc(p.prp_n + 1, PRP_REC);
+        Set64 seen = {0};
+        for (int prio = 0; recs && prio < 2; prio++)
+            for (size_t i = 0; i < p.prp_n; i++) {
+                const uint8_t *r = p.prp + i * PRP_REC;
+                if (r[1] != prio || !set_add(&seen, hash8(r + 4))) continue;
+                memcpy(recs + u++ * PRP_REC, r, PRP_REC);
+            }
+        free(seen.v);
+        RecHeader h = {{'T', 'O', 'T', 'K', 'S', 'P', 'R', 'P'}, PRP_VERSION, PRP_REC};
+        uint8_t *file = recs ? malloc(sizeof h + u * PRP_REC + 1) : NULL;
+        if (file) {
+            memcpy(file, &h, sizeof h), memcpy(file + sizeof h, recs, u * PRP_REC);
+            if (!plat_file_write_atomic(out, file, sizeof h + u * PRP_REC)) rt_log("gfx_shader: cannot write %s", out);
+        }
+        rt_log("gfx_shader: %zu prepared variants listed in %s", u, out);
+        free(file), free(recs);
+    }
+    free(p.prp);
     char msg[320];
     snprintf(msg, sizeof msg, "gfx_shader: prepared %zu NVN 2 stages: %lld translated, %lld already cached, %lld failed to "
              "translate, %lld did not lower; %lld integer-attribute variants from %d patterns; %.0f ms", p.n,
