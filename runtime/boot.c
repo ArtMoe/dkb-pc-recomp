@@ -356,6 +356,7 @@ void rt_boot(void) {
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
     ldr_load(rt_config()->exefs);
     rt_patches_init();
+    dkb_camera_init();
     frame_step_init();
     res_init();
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);

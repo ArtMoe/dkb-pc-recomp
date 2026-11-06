@@ -152,6 +152,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_PROMPTS_RESTART] = "prompts change after restart",
     [UI_MENU_STICK_DEADZONE] = "Stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own.",
+    [UI_MENU_MOUSE_CAMERA] = "Direct mouse camera",
+    [UI_MENU_MOUSE_CAMERA_DESC] = "Rotate the normal follow camera directly with mouse movement, without controller "
+                                "acceleration or smoothing. Other camera modes use controller-style mouse input. "
+                                "Off restores controller-style input everywhere.",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
 
