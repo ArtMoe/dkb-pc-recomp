@@ -320,7 +320,10 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
     if (!(dt_s > 0) || !(sens > 0)) return;
     double k = STICK_MAX * (double)sens / (MOUSE_FULL_CPS * dt_s);
     double x = dx * k, y = -dy * k, len = sqrt(x * x + y * y);
-    if (len > STICK_MAX) { x *= STICK_MAX / len; y *= STICK_MAX / len; }
+    // Approach full deflection gradually: a hard clamp makes different sensitivities identical as soon as both
+    // reach the stick limit. Apply the same gain to both axes so diagonal motion keeps its direction.
+    double gain = STICK_MAX / (STICK_MAX + len);
+    x *= gain; y *= gain;
     out[0] = (int32_t)lrint(x);
     out[1] = (int32_t)lrint(y);
 }
