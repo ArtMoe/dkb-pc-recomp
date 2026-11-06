@@ -272,9 +272,17 @@ static float mouse_sens_get(void) {
 // Under lock. Input continues polling when the camera patch is off, so it can enable the
 // callbacks again without a restart. The callbacks also check this before consuming motion.
 static int mouse_direct_mode(void) {
-    int on = cfg_bool("TOTK_MOUSE_CAMERA");
-    rt_patch_switch(rt_patch_set("mousecamera"), on);
-    if (!on) mouse_direct_frame = ~0ull;
+    static int patch = -2, on = -1;
+    static unsigned seen;
+    // Patch-set indices are fixed for this executable, including a missing set (-1).
+    if (patch == -2) patch = rt_patch_set("mousecamera");
+    unsigned ver = cfg_version();
+    if (on < 0 || seen != ver) {
+        on = cfg_bool("TOTK_MOUSE_CAMERA");
+        seen = ver;
+        rt_patch_switch(patch, on);
+        if (!on) mouse_direct_frame = ~0ull;
+    }
     return on;
 }
 

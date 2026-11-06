@@ -75,4 +75,8 @@ site mousecamera main 7f22f8 6d42a3e9 6d42a3e9 947177ce   # pitch end: x19 is th
 # Let vertical mouse activity interrupt the same waiting states as stick input.
 site mousecamera main 5ef070 2d4e0660 2d4e0660 94798474   # Interp manual input check
 site mousecamera main 17357c0 bd407260 bd407260 94346aa0   # SnapEnd manual input check
+# AcceptRequest loads s0 from [x0, #0x70] at 1735878, before the kept mov x19, x0.
+# The comparisons at 1735884 and 1735898 consume that value against -0.15 and +0.15
+# without reloading it. runtime/dkb_camera.c pitch_activity sets s0=1 only for matching
+# vertical mouse activity, taking the native activity branch at 173589c to 17358c8.
 site mousecamera main 173587c aa0003f3 aa0003f3 94346a71   # AcceptRequest manual input check
