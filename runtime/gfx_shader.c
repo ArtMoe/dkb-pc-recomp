@@ -2019,8 +2019,36 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
 
 // The service round trip for a request that is in neither cache. One translation per cache key (per code hash while
 // the use mask is unknown) runs at a time; different shaders run in parallel on the children.
+// DKB_ANSWER_STATS=1: why a translation was needed in play. A shader whose answers, inside its use mask, are the
+// preparation's defaults (2D textures, float attributes and outputs) is in the shader cache after --prepare-shaders, so
+// each line names what differed: the texture slots and their types, the attributes, the colour outputs.
+static void answer_stats_note(const Req *r, int stage, const uint8_t *code, const GfxShaderAnswers *a) {
+    static int on = -1;
+    static volatile int64_t lines;
+    if (on < 0) on = cfg_get("DKB_ANSWER_STATS") != NULL;
+    if (!on || !a) return;
+    UseMask m = {0};
+    int known = r->final;
+    if (known) use_find(r->code_hash, &m);
+    char tex[160] = "", att[96] = "", out[64] = "";
+    size_t tn = 0, an = 0, on_ = 0;
+    for (int i = 0; i < 32; i++) {
+        if ((m.slots >> i & 1) && (a->tex_type[i] != GFX_TEX_2D || a->img_type[i]) && tn < sizeof tex - 24)
+            tn += (size_t)snprintf(tex + tn, sizeof tex - tn, " %d:t%d/i%d", i, a->tex_type[i], a->img_type[i]);
+        if ((m.attrs >> i & 1) && a->attr_type[i] != GFX_TYPE_FLOAT && an < sizeof att - 12)
+            an += (size_t)snprintf(att + an, sizeof att - an, " %d:%d", i, a->attr_type[i]);
+    }
+    for (int i = 0; i < 8; i++)
+        if ((m.fouts >> i & 1) && a->frag_out_type[i] != GFX_TYPE_FLOAT && on_ < sizeof out - 12)
+            on_ += (size_t)snprintf(out + on_, sizeof out - on_, " %d:%d", i, a->frag_out_type[i]);
+    if (plat_inc64(&lines) > 400) return;
+    rt_log("answers: translated in play: stage %d, use mask %s, NVN 2 stage %016llx; non-default textures [%s] attributes [%s] "
+           "outputs [%s]", stage, known ? "known" : "unknown", (unsigned long long)nvn2_origin(code), tex, att, out);
+}
+
 static const GfxShader *translate(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
                                   const GfxShaderAnswers *a) {
+    answer_stats_note(r, stage, code, a);
     int away = kern_core_away();
     const uint8_t *id = r->final ? r->key : r->code_hash;
     flight_enter(id);
@@ -2765,8 +2793,206 @@ void gfx_shader_prepare_recorded(int threads, int procs) {
 #define PRP_VERSION 1
 #define PRP_REC 36
 
+// ---- NVN 2 seed pack: every stage of the game's shader files (tools/dkb_shader_census.py writes seed-nvn2.bin)
+// "DKBN2SD1", u32 count, then per stage: u32 stage (GFX_STAGE_*), u32 control size, u32 code size, the control section
+// and the code, each padded to 4 bytes. Each stage is lowered as nvnProgramSetShaders lowers it and translated with the
+// default answers (every texture slot a 2D texture, float vertex inputs and colour outputs; a compute stage's local size
+// from its control). The answers do not change a shader's SPIR-V for slots it never reads (mask_answers), so a stage
+// whose draws bind other types (3D or cube textures, integer attributes) still translates on first use; play records
+// those variants and the boot prewarm keeps them.
+// Integer vertex attributes: a vertex stage whose draws bind integer formats (bone indices, packed colours) is a variant of
+// its default. A game has few vertex layouts, so the variants are patterns of Locations: the ones met in play so far
+// (Locations 6, 6 and 7, 3 and 4, all unsigned) and every other pattern the local shader-answers.bin recorded. A stage
+// that reads none of a pattern's Locations resolves to the same cache key as its default and costs a lookup.
+#define N2_PATS 32
+typedef struct { uint8_t attr[16]; } N2Pat;
+static const uint8_t n2_builtin_patterns[][16] = {
+    {[6] = GFX_TYPE_UINT}, {[6] = GFX_TYPE_UINT, [7] = GFX_TYPE_UINT}, {[3] = GFX_TYPE_UINT, [4] = GFX_TYPE_UINT},
+};
+
+typedef struct {
+    const uint8_t **rec;
+    size_t n;
+    N2Pat pat[N2_PATS];
+    int npat;
+    volatile int64_t next, done, translated, variants, failed, unlowered;
+    PlatMutex lock;                                        // guards prp
+    uint8_t *prp;                                          // shader-prepared.bin records (PRP_REC bytes), one per translation
+    size_t prp_n, prp_cap;
+} N2Prep;
+
+// The variant just resolved, for shader-prepared.bin: the driver pipeline libraries of everything listed are built after
+// the translation (vk_pipeline.c, lb_warm_prepared), so a draw finds them in the driver's cache. prio 0: a stage with the
+// default answers, 1: an integer-attribute variant.
+static void n2_note(N2Prep *p, int stage, int prio, const GfxShader *s) {
+    plat_mutex_lock(&p->lock);
+    if (p->prp_n == p->prp_cap) {
+        size_t cap = p->prp_cap ? p->prp_cap * 2 : 4096;
+        uint8_t *t = realloc(p->prp, cap * PRP_REC);
+        if (!t) {
+            plat_mutex_unlock(&p->lock);
+            return;
+        }
+        p->prp = t, p->prp_cap = cap;
+    }
+    uint8_t *r = p->prp + p->prp_n++ * PRP_REC;
+    memset(r, 0, PRP_REC);
+    r[0] = (uint8_t)(stage < 6 ? stage : 0), r[1] = (uint8_t)prio;
+    memcpy(r + 4, s->iid, 32);
+    plat_mutex_unlock(&p->lock);
+}
+
+static void n2_add_pattern(N2Prep *p, const uint8_t attr[16]) {
+    static const uint8_t zero[16];
+    if (!memcmp(attr, zero, 16) || p->npat >= N2_PATS) return;
+    for (int i = 0; i < p->npat; i++)
+        if (!memcmp(p->pat[i].attr, attr, 16)) return;
+    memcpy(p->pat[p->npat++].attr, attr, 16);
+}
+
+static void n2_worker(void *arg) {
+    N2Prep *p = arg;
+    for (;;) {
+        size_t i = (size_t)plat_inc64(&p->next) - 1;
+        if (i >= p->n) return;
+        const uint8_t *r = p->rec[i];
+        uint32_t st, ctl_size;
+        memcpy(&st, r, 4), memcpy(&ctl_size, r + 4, 4);
+        const uint8_t *control = r + 12, *code = control + ((ctl_size + 3) & ~3u), *nctl, *ncode;
+        if (!nvn2_lower(control, code, &nctl, &ncode)) {
+            plat_inc64(&p->unlowered), plat_inc64(&p->done);
+            continue;
+        }
+        GfxShaderAnswers a;
+        memset(&a, 0, sizeof a);
+        if (st == GFX_STAGE_CS) {
+            for (int k = 0; k < 3; k++) {
+                uint32_t l;
+                memcpy(&l, nctl + 0x748 + 4 * k, 4);
+                a.local[k] = (uint16_t)(l ? l : 1);
+            }
+        } else {
+            memset(a.tex_type, GFX_TEX_2D, sizeof a.tex_type);
+        }
+        uint32_t length;
+        memcpy(&length, nctl + 0x704, 4);
+        uint64_t x0 = (uint64_t)n_xlated;
+        const GfxShader *s = gfx_shader_get((int)st, nctl, ncode, length, NULL, &a);
+        if (!s) plat_inc64(&p->failed);
+        else if ((uint64_t)n_xlated != x0) plat_inc64(&p->translated);
+        if (s) n2_note(p, (int)st, 0, s);
+        if (s && st == GFX_STAGE_VS)
+            for (int k = 0; k < p->npat; k++) {
+                GfxShaderAnswers b = a;
+                memcpy(b.attr_type, p->pat[k].attr, sizeof p->pat[k].attr);
+                x0 = (uint64_t)n_xlated;
+                const GfxShader *v = gfx_shader_get((int)st, nctl, ncode, length, NULL, &b);
+                if (!v) plat_inc64(&p->failed);
+                else {
+                    if ((uint64_t)n_xlated != x0) plat_inc64(&p->variants);
+                    if (memcmp(v->iid, s->iid, 32)) n2_note(p, (int)st, 1, v);   // the same id as the default: listed already
+                }
+            }
+        plat_inc64(&p->done);
+    }
+}
+
+// 0 when the pack was read (stages that fail to translate are counted, not fatal), 1 when it cannot be read.
+static int prepare_nvn2(const char *path, const char *dir, int threads, int procs) {
+    double t0 = (double)plat_now_ms();
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = size > 12 ? malloc((size_t)size) : NULL;
+    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size || memcmp(buf, "DKBN2SD1", 8)) {
+        fclose(f), free(buf);
+        rt_log("gfx_shader: prepare: %s is not an NVN 2 seed pack", path);
+        return 1;
+    }
+    fclose(f);
+    uint32_t count;
+    memcpy(&count, buf + 8, 4);
+    N2Prep p = {.rec = calloc(count + 1, sizeof *p.rec), .lock = PLAT_MUTEX_INIT};
+    for (size_t i = 0; i < sizeof n2_builtin_patterns / sizeof *n2_builtin_patterns; i++) n2_add_pattern(&p, n2_builtin_patterns[i]);
+    {   // patterns this machine's play recorded
+        char rec_path[PATH_CAP + 32];
+        uint8_t *ab = NULL;
+        size_t an = 0;
+        snprintf(rec_path, sizeof rec_path, "%s/shader-answers.bin", dir);
+        if (answers_read(rec_path, &ab, &an, 0))
+            for (size_t i = 0; i < an / ANS_REC; i++) {
+                const uint8_t *r = ab + i * ANS_REC;
+                uint32_t rs;
+                memcpy(&rs, r, 4);
+                if (rs == GFX_STAGE_VS) n2_add_pattern(&p, r + 68 + 96);   // attr_type[0..15] of the packed answers
+            }
+        free(ab);
+    }
+    const uint8_t *at = buf + 12, *end = buf + size;
+    for (uint32_t i = 0; p.rec && i < count; i++) {
+        uint32_t cl, len;
+        if (end - at < 12) break;
+        memcpy(&cl, at + 4, 4), memcpy(&len, at + 8, 4);
+        size_t total = 12 + (((size_t)cl + 3) & ~(size_t)3) + (((size_t)len + 3) & ~(size_t)3);
+        if ((size_t)(end - at) < total) break;
+        p.rec[p.n++] = at, at += total;
+    }
+    threads = threads < 1 ? 1 : threads > 64 ? 64 : threads;
+    svc_set_limit(procs);
+    PlatThread *t[64];
+    int k = 0;
+    for (int i = 0; p.rec && i < threads; i++)
+        if ((t[k] = plat_thread_new(n2_worker, &p, "nvn2 prepare"))) k++;
+    if (!k && p.rec) n2_worker(&p);
+    for (int m = 0; m < k; m++)
+        while (!plat_thread_join_ns(t[m], 5000000000u))
+            rt_log("gfx_shader: prepare: NVN 2 seed %lld of %zu stages, %lld translated, %.0f ms", (long long)p.done, p.n,
+                   (long long)p.translated, (double)plat_now_ms() - t0);
+    svc_set_limit(svc_runtime_limit());
+    {   // shader-prepared.bin: one record per input id, default variants first
+        char out[PATH_CAP + 32];
+        snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);
+        size_t u = 0;
+        uint8_t *recs = calloc(p.prp_n + 1, PRP_REC);
+        Set64 seen = {0};
+        for (int prio = 0; recs && prio < 2; prio++)
+            for (size_t i = 0; i < p.prp_n; i++) {
+                const uint8_t *r = p.prp + i * PRP_REC;
+                if (r[1] != prio || !set_add(&seen, hash8(r + 4))) continue;
+                memcpy(recs + u++ * PRP_REC, r, PRP_REC);
+            }
+        free(seen.v);
+        RecHeader h = {{'T', 'O', 'T', 'K', 'S', 'P', 'R', 'P'}, PRP_VERSION, PRP_REC};
+        uint8_t *file = recs ? malloc(sizeof h + u * PRP_REC + 1) : NULL;
+        if (file) {
+            memcpy(file, &h, sizeof h), memcpy(file + sizeof h, recs, u * PRP_REC);
+            if (!plat_file_write_atomic(out, file, sizeof h + u * PRP_REC)) rt_log("gfx_shader: cannot write %s", out);
+        }
+        rt_log("gfx_shader: %zu prepared variants listed in %s", u, out);
+        free(file), free(recs);
+    }
+    free(p.prp);
+    char msg[320];
+    snprintf(msg, sizeof msg, "gfx_shader: prepared %zu NVN 2 stages: %lld translated, %lld already cached, %lld failed to "
+             "translate, %lld did not lower; %lld integer-attribute variants from %d patterns; %.0f ms", p.n,
+             (long long)p.translated, (long long)(p.done - p.translated - p.failed - p.unlowered), (long long)p.failed,
+             (long long)p.unlowered, (long long)p.variants, p.npat, (double)plat_now_ms() - t0);
+    rt_log("%s", msg);
+    printf("%s\n", msg);
+    free(p.rec), free(buf);
+    return 0;
+}
+
 int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
-    char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32];
+    char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32], n2[PATH_CAP + 32];
+    snprintf(n2, sizeof n2, "%s/seed-nvn2.bin", dir);
+    if (plat_file_exists(n2)) {
+        int rc = prepare_nvn2(n2, dir, threads, procs);
+        snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
+        if (rc || !plat_file_exists(ans)) return rc;   // no MacNativeGames-style seed beside it: done
+    }
     snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
     snprintf(prg, sizeof prg, "%s/seed-programs.bin", dir);
     snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);

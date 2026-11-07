@@ -36,6 +36,30 @@ build\dkb100\dkb.exe
 Run it from inside the repository: it finds the shader translator (`build\xlate\totk_xlate.exe`) by looking up from
 its own folder. The first run translates every shader it meets and is slow; later runs use the cache.
 
+Prepare the shaders once (the Bananza installer does this as its `dkb_shaders` step): the game's own shader files hold
+about 18,800 shader stages, and translating one the first time a draw needs it takes about 35 ms, with the draw waiting.
+On a first visit to an area that adds up to seconds. These two steps translate them all up front, from your own game
+files:
+
+```
+.venv\Scripts\python tools\dkb_shader_census.py --version dkb100 --out build\dkb100
+build\dkb100\dkb.exe --prepare-shaders
+```
+
+The first reads the shader folders of the extracted RomFS (4 seconds) and writes `seed-nvn2.bin` (about 187 MiB) next to
+`dkb.exe`; the second lowers and translates every stage into the shader cache. Each stage is translated with the default
+answers (every texture a 2D texture, float vertex inputs and colour outputs), and each vertex stage again for the integer
+vertex layouts met so far (Locations 6, 6 and 7, 3 and 4) plus any layout your own `shader-answers.bin` recorded. That
+takes about 150 seconds on 20 threads and about 2.9 GB of cache. The pack is deleted afterwards by the installer.
+`--prepare-shaders` also builds the driver's pipeline libraries in the same process. The installer instead runs
+`--translate-shaders` (translation only) and then `--warm-shaders` (libraries only), so a driver crash in the second
+cannot fail the first.
+
+In a cold run of the first area this cut the shaders translated during play from 714 to 62, the worst translation stall
+from 6.6 s to 0.34 s, and the 1% low of the last window from 24 to 39 fps. What is left is about 1.4% of the stages the
+game loads: 38 embedded in `main` and about 50 whose code is in no file the census reads. They translate on first use, and
+play records them. `DKB_ANSWER_STATS=1` logs each translation made in play with what made it necessary.
+
 Useful settings, as environment variables (`set NAME=value` in the same Command Prompt):
 
 | Setting | Effect |
