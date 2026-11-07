@@ -218,6 +218,7 @@ typedef struct {
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pei;
 } FeatureChain;
 
 static int create_device(void) {
@@ -277,6 +278,9 @@ static int create_device(void) {
                 ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
                 CHAIN(abr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT);
             }
+            // The driver's compiled code size and ISA per pipeline, to map a faulting shader binary to our stages.
+            OPTIONAL_EXT(has_pipeline_exec_info, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, pei,
+                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR);
         }
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
@@ -316,6 +320,7 @@ static int create_device(void) {
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     if (g_vk.has_address_binding_report && !c->abr.reportAddressBinding) g_vk.has_address_binding_report = 0;
+    if (g_vk.has_pipeline_exec_info && !c->pei.pipelineExecutableInfo) g_vk.has_pipeline_exec_info = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {

@@ -198,6 +198,13 @@ void vk_crumbs_init(VkCtx *c) {
     rt_log("vk: GPU breadcrumbs on (VK_AMD_buffer_marker)");
 }
 
+// isa_dump state (below), reset on release.
+static uint32_t pipes;
+static uint64_t written;
+static PFN_vkGetPipelineExecutablePropertiesKHR get_props;
+static PFN_vkGetPipelineExecutableStatisticsKHR get_stats;
+static PFN_vkGetPipelineExecutableInternalRepresentationsKHR get_irs;
+
 void vk_crumbs_release(void) {
     VkCtx *c = vk_ctx();
     if (ab_messenger && c) {
@@ -215,6 +222,7 @@ void vk_crumbs_release(void) {
     if (buf && c) vmaDestroyBuffer(c->vma, buf, alloc);
     buf = VK_NULL_HANDLE, alloc = NULL, words = NULL, write_marker = NULL;
     set_cp = NULL, get_cp = NULL, get_cp2 = NULL;
+    get_props = NULL, get_stats = NULL, get_irs = NULL, pipes = 0, written = 0;
     plat_mutex_lock(&cp_lock);
     memset(cp_reg, 0, sizeof cp_reg);
     plat_mutex_unlock(&cp_lock);
@@ -226,14 +234,109 @@ void vk_checkpoint(VkCommandBuffer cb, const void *marker) {
     if (set_cp && cb) set_cp(cb, marker);
 }
 
+VkPipelineCreateFlags vk_pipeline_capture_flags(void) {
+    VkCtx *c = vk_ctx();
+    return c && c->has_pipeline_exec_info && set_cp
+               ? VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR
+               : 0;
+}
+
+// DKB_GPU_CHECKPOINTS=1 with VK_KHR_pipeline_executable_properties: one log line per executable of a pipeline (its
+// statistics, which include the compiled binary size on NVIDIA) and its internal representations (the driver's ISA text
+// or binary) saved next to dkb.log, so a faulting shader binary of a known size and code offset can be matched to the
+// NVN 2 stages that built it. The files hold code derived from the game: local only, ignored by git.
+enum { ISA_MAX_PIPES = 4096, ISA_MAX_BYTES = 512u << 20 };
+
+static void isa_dump(VkPipeline p, uint64_t vs, uint64_t gs, uint64_t fs) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_pipeline_exec_info || __atomic_fetch_add(&pipes, 1, __ATOMIC_RELAXED) >= ISA_MAX_PIPES) return;
+    plat_mutex_lock(&cp_lock);   // the entry points load once, the byte budget is shared
+    if (!get_irs) {
+        get_props = (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(c->device, "vkGetPipelineExecutablePropertiesKHR");
+        get_stats = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(c->device, "vkGetPipelineExecutableStatisticsKHR");
+        get_irs = (PFN_vkGetPipelineExecutableInternalRepresentationsKHR)vkGetDeviceProcAddr(
+            c->device, "vkGetPipelineExecutableInternalRepresentationsKHR");
+    }
+    plat_mutex_unlock(&cp_lock);
+    if (!get_props || !get_stats || !get_irs) return;
+    uint32_t ne = 0;
+    VkPipelineInfoKHR pinfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = p};
+    if (get_props(c->device, &pinfo, &ne, NULL) != VK_SUCCESS || !ne) return;
+    VkPipelineExecutablePropertiesKHR *pr = calloc(ne, sizeof *pr);
+    if (!pr) return;
+    for (uint32_t i = 0; i < ne; i++) pr[i].sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR;
+    get_props(c->device, &pinfo, &ne, pr);
+    const char *lp = rt_log_path();
+    const char *cut = lp ? strrchr(lp, '/') : NULL;
+    for (uint32_t i = 0; i < ne; i++) {
+        VkPipelineExecutableInfoKHR ei = {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = p, .executableIndex = i};
+        const char *stage = pr[i].stages & VK_SHADER_STAGE_VERTEX_BIT ? "vertex" : pr[i].stages & VK_SHADER_STAGE_FRAGMENT_BIT ? "fragment"
+                          : pr[i].stages & VK_SHADER_STAGE_GEOMETRY_BIT ? "geometry" : "other";
+        char line[2048];
+        int n = snprintf(line, sizeof line, "vk: pipeline %p (NVN 2 stages %016llx %016llx %016llx) executable %u %s \"%s\" \"%s\":", (void *)p,
+                         (unsigned long long)vs, (unsigned long long)gs, (unsigned long long)fs, i, stage, pr[i].name, pr[i].description);
+        uint32_t ns = 0;
+        VkPipelineExecutableStatisticKHR *st = NULL;
+        if (get_stats(c->device, &ei, &ns, NULL) == VK_SUCCESS && ns && (st = calloc(ns, sizeof *st))) {
+            for (uint32_t j = 0; j < ns; j++) st[j].sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR;
+            get_stats(c->device, &ei, &ns, st);
+            for (uint32_t j = 0; j < ns && n > 0 && (size_t)n < sizeof line; j++) {
+                const VkPipelineExecutableStatisticValueKHR *v = &st[j].value;
+                switch (st[j].format) {
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: n += snprintf(line + n, sizeof line - n, " %s=%u", st[j].name, v->b32); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: n += snprintf(line + n, sizeof line - n, " %s=%lld", st[j].name, (long long)v->i64); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: n += snprintf(line + n, sizeof line - n, " %s=%llu", st[j].name, (unsigned long long)v->u64); break;
+                default: n += snprintf(line + n, sizeof line - n, " %s=%g", st[j].name, v->f64); break;
+                }
+            }
+            free(st);
+        }
+        rt_log("%s", line);
+        uint32_t nr = 0;
+        if (get_irs(c->device, &ei, &nr, NULL) != VK_SUCCESS || !nr) continue;
+        VkPipelineExecutableInternalRepresentationKHR *ir = calloc(nr, sizeof *ir);
+        if (!ir) continue;
+        for (uint32_t j = 0; j < nr; j++) ir[j].sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR;
+        if (get_irs(c->device, &ei, &nr, ir) == VK_SUCCESS) {   // sizes only: pData is NULL
+            for (uint32_t j = 0; j < nr; j++) {
+                size_t sz = ir[j].dataSize;
+                if (!sz || __atomic_fetch_add(&written, sz, __ATOMIC_RELAXED) + sz > ISA_MAX_BYTES) {   // reserve before malloc
+                    if (sz) __atomic_fetch_sub(&written, sz, __ATOMIC_RELAXED);
+                    rt_log("vk: pipeline %p executable %u representation \"%s\" (%zu bytes) not saved (budget)", (void *)p, i, ir[j].name, sz);
+                    continue;
+                }
+                if (!(ir[j].pData = malloc(sz))) __atomic_fetch_sub(&written, sz, __ATOMIC_RELAXED);
+            }
+            get_irs(c->device, &ei, &nr, ir);   // fills the buffers just allocated
+            {
+                for (uint32_t j = 0; j < nr; j++) {
+                    if (!ir[j].pData) continue;
+                    char path[PLAT_PATH_MAX * 3 + 96], suffix[24] = "";
+                    if (i || j) snprintf(suffix, sizeof suffix, "-%u-%u", i, j);
+                    if (cut) snprintf(path, sizeof path, "%.*s/dkb-isa-%llx-%s%s.%s", (int)(cut - lp), lp, (unsigned long long)(uintptr_t)p, stage,
+                                      suffix, ir[j].isText ? "txt" : "bin");
+                    if (cut && plat_file_write_atomic(path, ir[j].pData, ir[j].dataSize)) {
+                        rt_log("vk: pipeline %p executable %u representation \"%s\" saved: %s (%zu bytes)", (void *)p, i, ir[j].name, path, ir[j].dataSize);
+                    } else __atomic_fetch_sub(&written, ir[j].dataSize, __ATOMIC_RELAXED), rt_log("vk: pipeline %p executable %u representation \"%s\": cannot save", (void *)p, i, ir[j].name);
+                }
+            }
+            for (uint32_t j = 0; j < nr; j++) free(ir[j].pData);
+        }
+        free(ir);
+    }
+    free(pr);
+}
+
 void vk_checkpoint_note(VkPipeline p, uint64_t a, uint64_t b, uint64_t c) {
     if (!set_cp || !p) return;
     plat_mutex_lock(&cp_lock);
     uint32_t i = cp_slot(p);
     int n = 0;
     while (n < CP_PROBES && cp_reg[i].pipe && cp_reg[i].pipe != p) n++, i = (i + 1) % CP_SLOTS;
+    int fresh = n < CP_PROBES && !cp_reg[i].pipe;
     if (n < CP_PROBES) cp_reg[i].pipe = p, cp_reg[i].stage[0] = a, cp_reg[i].stage[1] = b, cp_reg[i].stage[2] = c;
     plat_mutex_unlock(&cp_lock);
+    if (fresh) isa_dump(p, a, b, c);   // first bind of this pipeline: its stage names are known now
 }
 
 // Non-pipeline checkpoints (dispatch, copies, blits, clears; vk_rec.c): the marker points into this ring and names the

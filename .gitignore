@@ -70,6 +70,9 @@ __pycache__/
 *.log
 # The driver's GPU fault dump (DKB_GPU_CHECKPOINTS=1) can hold shader code derived from the game.
 dkb-fault-*.bin
+# The driver's compiled shader code per pipeline (DKB_GPU_CHECKPOINTS=1) is derived from the game shaders: local only.
+dkb-isa-*.txt
+dkb-isa-*.bin
 Thumbs.db
 desktop.ini
 .DS_Store
