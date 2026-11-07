@@ -590,10 +590,21 @@ class Shaders(Step):
         run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.tools / 'dkb_shader_census.py', '--version', GAME,
                                 '--romfs', ctx.dest / 'romfs', '--out', ctx.dest])
         try:
-            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--prepare-shaders'], cwd=ctx.dest)
+            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--translate-shaders'], cwd=ctx.dest)
         finally:
             pack.unlink(missing_ok=True)
-        return {'prepared': True}
+        # The driver pipeline libraries are an optimisation: a driver that crashes building them (nvgpucomp64.dll on
+        # NVIDIA 621.01) must not fail the step, or every retry would crash again.
+        libraries = True
+        try:
+            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--warm-shaders'], cwd=ctx.dest)
+        except InstallError as error:
+            if error.id != 'dkb.tool_failed':   # a path-safety rejection still stops the install
+                raise
+            libraries = False
+            ctx.reporter.warning('warn.dkb_libraries_failed', detail=f"exit code {error.params.get('code')}",
+                                 log=str(error.params.get('log')))
+        return {'prepared': True, 'libraries': libraries}
 
 
 class Prepare(Step):

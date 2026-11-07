@@ -93,7 +93,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
             if fail:
                 fail(ctx, step, command)
             if step == 'dkb_shaders':   # the census and the translation run for real only in a full install
-                if str(command[-1]) == '--prepare-shaders':
+                if str(command[-1]) == '--translate-shaders':
                     (ctx.dest / 'shader-cache').mkdir(exist_ok=True)
                 return
             if step == 'dkb_verify':
@@ -154,6 +154,29 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(self.calls, [])
         self.assertEqual({e['step'] for e in events if e['type']=='step' and e['state']=='skipped'},
                          {'dkb_data','dkb_translator','lift','compile','dkb_shaders','dkb_verify'})
+
+    def test_library_warm_failure_does_not_fail_the_step(self):
+        def crash(ctx, step, command):
+            if str(command[-1]) == '--warm-shaders':
+                raise b.InstallError('dkb.tool_failed', step=step, code=3221225477, log='warm.log')
+        code, events = self.run_install(crash)
+        self.assertEqual(code, 0, events)
+        self.assertIn('warn.dkb_libraries_failed', [e.get('id') for e in events if e['type'] == 'warning'])
+        record = b.statefile.load(self.dest, b.STATE)['steps']['dkb_shaders']
+        self.assertTrue(record['prepared'])
+        self.assertFalse(record['libraries'])
+        self.calls.clear()
+        self.assertEqual(self.run_install()[0], 0)
+        self.assertEqual(self.calls, [], 'a retry must not run the crashing library build again')
+
+    def test_translation_failure_fails_the_step(self):
+        def fail(ctx, step, command):
+            if str(command[-1]) == '--translate-shaders':
+                raise b.InstallError('dkb.tool_failed', step=step, code=1, log='translate.log')
+        code, events = self.run_install(fail)
+        self.assertEqual(code, 1)
+        self.assertNotIn('dkb_shaders', b.statefile.load(self.dest, b.STATE)['steps'])
+        self.assertNotIn('--warm-shaders', [c[-1] for _, c in self.calls])
 
     def test_cancel_before_compile_resumes_without_redoing_pack(self):
         def cancel(ctx, step, command):
@@ -313,7 +336,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         (self.romfs/'other.bin').write_bytes(b'a changed source')
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
-        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_verify'])
+        self.assertEqual([step for step, _ in self.calls], ['dkb_data','lift','compile','dkb_shaders','dkb_shaders','dkb_shaders','dkb_verify'])
 
     def test_source_mutation_during_pack_is_not_installed(self):
         def mutate(ctx, step, command):

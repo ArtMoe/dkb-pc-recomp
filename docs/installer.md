@@ -53,9 +53,11 @@ The Bananza steps are:
 5. Build `dkb100` from the current runtime sources with `tools/build_game.py`, without `--runtime-lib`, then copy the
    executable, runtime libraries and RomFS index into place. The default worker limit is six; `--jobs` changes it.
 6. Translate the game's shaders: `tools/dkb_shader_census.py` lists the shader stages in the packed RomFS into
-   `seed-nvn2.bin`, `dkb.exe --prepare-shaders` lowers and translates them into the shader cache beside the executable
+   `seed-nvn2.bin`, `dkb.exe --translate-shaders` lowers and translates them into the shader cache beside the executable
    (a few minutes, about 3 GB), and the pack is deleted. Without this step the first visit to each area waits for its
-   shaders.
+   shaders. Then `dkb.exe --warm-shaders` builds the driver's pipeline libraries; if that fails or the driver crashes
+   (seen in `nvgpucomp64.dll` on NVIDIA 621.01) the installer warns and goes on, records `libraries: false` and does not
+   retry, since the libraries only speed up the first draws. A translation failure fails the step.
 7. Write the selected language while preserving existing settings, run the installed executable's `--selftest`, and
    remove only owned staging/build directories. Logs remain in the temporary folder. Setup does not start the game.
 

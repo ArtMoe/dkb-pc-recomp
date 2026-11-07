@@ -3588,7 +3588,7 @@ static void lb_warm_prepared(const char *dir) {
 // totk.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every
 // cache key), the seed next to totk.exe is translated on every core, then every prepared variant's stage library or
 // compute pipeline is built once into the driver's disk cache (lb_warm_prepared). No game runs.
-int vk_pipeline_prepare_shaders(void) {
+static int prepare_shaders(int libraries) {
     if (!ensure_init()) {
         fprintf(stderr, "prepare-shaders: no Vulkan device\n");
         return 1;
@@ -3602,9 +3602,15 @@ int vk_pipeline_prepare_shaders(void) {
     const char *pe = cfg_get("TOTK_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
     int rc = gfx_shader_prepare_seed(dir, cpus, procs < 1 ? 1 : procs);
-    if (!rc) lb_warm_prepared(dir);
+    if (!rc && libraries) lb_warm_prepared(dir);
     return rc;
 }
+
+int vk_pipeline_prepare_shaders(void) { return prepare_shaders(1); }
+
+// dkb.exe --translate-shaders (installer/bananza.py): the translation and shader-prepared.bin only, so a driver that
+// crashes while building the libraries cannot fail it. --warm-shaders builds the libraries afterwards.
+int vk_pipeline_translate_shaders(void) { return prepare_shaders(0); }
 
 // totk.exe --warm-shaders: every variant of shader-prepared.bin built into the driver's disk cache again from the shader
 // cache, without translating the seed. The AMD cache is keyed to the exe path (a relink keeps it: 29,587 variants in
