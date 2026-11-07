@@ -762,8 +762,7 @@ static int ww_warned;
 static int vm_init(void) {   // vm_lock held
     if (pstate) return 1;
     void *p = mmap(NULL, (size_t)(PS_LIMIT / PG), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    pstate = p == MAP_FAILED ? NULL : p;
-    if (pstate) memset(pstate, PS_FREE, (size_t)(PS_LIMIT / PG));
+    pstate = p == MAP_FAILED ? NULL : p;   // anonymous memory reads zero, which is PS_FREE
     return pstate != NULL;
 }
 
@@ -806,7 +805,10 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
                             "texture uploads run in full\n");
         }
         mach_vm_address_t a = addr;
-        if (mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED) == KERN_SUCCESS && a == addr) {
+        kern_return_t kr = mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED);
+        if (kr == KERN_SUCCESS && a != addr) {
+            mach_vm_deallocate(mach_task_self(), a, n);   // a fixed allocation stays put; never keep one elsewhere
+        } else if (kr == KERN_SUCCESS) {
             if (!mach_vm_protect(mach_task_self(), addr, n, FALSE, VM_PROT_NONE)) {
                 ok = ps_apply(addr, n, PS_RESERVED);
                 if (!ok) mach_vm_deallocate(mach_task_self(), addr, n);
