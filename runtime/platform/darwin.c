@@ -387,11 +387,18 @@ static int qos_of(int prio) {
 
 void plat_thread_priority(int prio) { pthread_set_qos_class_self_np((qos_class_t)qos_of(prio), 0); }
 
-// A class set on another thread is a QOS override, the form macOS offers for a thread that is already running.
+// A class set on another thread is a QOS override, the form macOS offers for a thread that is already running. An
+// override only raises a thread above its own class: a lower priority ends the previous override and leaves the
+// thread at its own class, which is as low as another thread can put it.
 void plat_thread_set_priority(PlatThread *t, int prio) {
     if (!t) return;
     if (t->qos) pthread_override_qos_class_end_np(t->qos);
-    t->qos = pthread_override_qos_class_start_np(t->t, (qos_class_t)qos_of(prio), 0);
+    t->qos = NULL;
+    qos_class_t own = QOS_CLASS_UNSPECIFIED;
+    int rel = 0;
+    if (pthread_get_qos_class_np(t->t, &own, &rel)) own = QOS_CLASS_UNSPECIFIED;
+    qos_class_t want = (qos_class_t)qos_of(prio);
+    if (want > own) t->qos = pthread_override_qos_class_start_np(t->t, want, 0);
 }
 
 int plat_thread_priority_get(void) {
