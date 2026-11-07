@@ -220,7 +220,7 @@ def runtime_lib(out, llvm, sysroot):
     for name in build_game.INSTALL_SIDE:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
     from PIL import Image   # Tk loads no .ico off Windows: the window and the AppImage take a PNG
-    with Image.open(ROOT / 'runtime' / 'totk.ico') as ico:
+    with Image.open(ROOT / 'runtime' / 'dkb.ico') as ico:
         ico.size = max(ico.ico.sizes())
         ico.convert('RGBA').save(rt / 'totk.png')
     return build
