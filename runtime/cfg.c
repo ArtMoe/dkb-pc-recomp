@@ -659,7 +659,13 @@ static int find_ini(void) {
         strcpy(cut + 1, "totk.ini");
         uint64_t size = 0;
         uint8_t *old = plat_file_exists(path) ? plat_file_read(path, &size) : NULL;
-        if (old) plat_file_write_atomic(ini_path, old, size);
+        if (old) {
+            if (!plat_file_write_atomic(ini_path, old, size)) {
+                // The copy failed: keep using totk.ini, so the old settings still load and later saves update it.
+                rt_log("cfg: cannot copy %s to dkb.ini, keeping totk.ini", path);
+                snprintf(ini_path, sizeof ini_path, "%s", path);
+            }
+        }
         free(old);
     }
     return 1;
@@ -681,13 +687,13 @@ static void load_ini(void) {
     for (int i = 0; i < n_entries; i++) {
         char var[128];
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides totk.ini", var);
+        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides the settings file", var);
     }
 }
 
 void cfg_init(void) {
     load_ini();
     if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
+        rt_log("cfg: device profile Steam Deck: defaults for the keys the settings file does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");
 }
