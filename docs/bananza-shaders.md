@@ -17,8 +17,7 @@ Notes on the NVN 2 shader format and on how DKB Recomp turns the game's Ampere s
 
 ## The NVN 2 control section
 
-The layout differs completely from NVN 1's (`tools/dkb_nvn2_ctlstats.py` and
-`tools/dkb_nvn2_sphstats.py` read the whole corpus). Fields known so far, over the 2,656 stages of the game's corpus
+The layout differs completely from NVN 1's. Fields known so far, over the 2,656 stages of the game's corpus
 (`DKB_SHADER_DUMP`, see `runtime/gfx_shader.c`, `gfx_shader_nvn2_dump`):
 
 | Offset | Meaning |
