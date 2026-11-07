@@ -122,7 +122,7 @@ Missing edge-HUD overlays fall back to the centered variant with a log message.
 
 Environment equivalents are `DKB_ULTRAWIDE=0|1`, `DKB_OUTPUT_RES=<width>x<height>`,
 and `DKB_HUD_POSITION=edges|centered`. Overrides lock the corresponding F1 controls;
-otherwise choices are saved in `totk.ini`. Turning Ultrawide off allows the 16:9 presets
+otherwise choices are saved in `dkb.ini` (an existing `totk.ini` is copied to it on the first run; `TOTK_*` environment variables still work, and `DKB_*` ones win over them). Turning Ultrawide off allows the 16:9 presets
 and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 dimensions.
 
 5120x1440 (32:9) and 3840x2160 failed during render-resource creation and are excluded
@@ -147,7 +147,7 @@ Open an issue with the issue form, or comment on [#3](https://github.com/Lucas-b
 - the commit you built (`git rev-parse --short HEAD`);
 - GPU, driver version and Windows version;
 - how far the game got and what you did just before it stopped;
-- the log, `logs\totk.log` next to `dkb.exe`, as an attachment. After a crash, copy it before you start the game
-  again: the next run renames it to `totk.1.log`.
+- the log, `logs\dkb.log` next to `dkb.exe` (`logs\totk.log` in builds before the rename), as an attachment. After a crash, copy it before you start the game
+  again: the next run renames it to `dkb.1.log`.
 
 Never attach game files, keys, builds or the shader cache, and never paste key values into a log or an issue.

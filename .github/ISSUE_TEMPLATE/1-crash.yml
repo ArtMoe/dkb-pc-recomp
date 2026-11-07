@@ -64,6 +64,6 @@ body:
     id: log
     attributes:
       label: Log
-      description: Attach logs\totk.log from the folder of dkb.exe. Copy it before you start the game again, because the next start renames it.
+      description: Attach logs\dkb.log from the folder of dkb.exe. Copy it before you start the game again, because the next start renames it.
     validations:
       required: true

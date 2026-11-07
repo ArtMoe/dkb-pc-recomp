@@ -650,8 +650,18 @@ static int find_ini(void) {
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
     if (!cut || cut + 10 >= path + sizeof path) return 0;
-    strcpy(cut + 1, "totk.ini");
+    // Bananza writes dkb.ini and reads an older totk.ini only while no dkb.ini exists; TotK keeps totk.ini.
+    strcpy(cut + 1, rt_game_version ? "totk.ini" : "dkb.ini");
     snprintf(ini_path, sizeof ini_path, "%s", path);
+    if (!rt_game_version && !plat_file_exists(ini_path)) {
+        // No dkb.ini yet: an existing totk.ini is copied to it, so the settings carry over and every later write
+        // (which only touches the changed lines) lands in dkb.ini with the rest of the file intact.
+        strcpy(cut + 1, "totk.ini");
+        uint64_t size = 0;
+        uint8_t *old = plat_file_exists(path) ? plat_file_read(path, &size) : NULL;
+        if (old) plat_file_write_atomic(ini_path, old, size);
+        free(old);
+    }
     return 1;
 }
 

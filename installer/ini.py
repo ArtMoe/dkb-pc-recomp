@@ -59,11 +59,13 @@ def get_language(text):
     return None
 
 
-def write(dest, lang, example=None):
-    """Write dest/totk.ini with lang; an existing file keeps its other lines. Returns the path."""
-    path = Path(dest) / 'totk.ini'
-    if path.is_file():
-        text = path.read_text(encoding='utf-8-sig')
+def write(dest, lang, example=None, name='totk.ini', fallback=None):
+    """Write dest/<name> with lang; an existing file keeps its other lines. Without that file, an existing
+    dest/<fallback> (the older name) is the starting text. Returns the path."""
+    path = Path(dest) / name
+    old = Path(dest) / fallback if fallback else None
+    if path.is_file() or (old and old.is_file()):
+        text = (path if path.is_file() else old).read_text(encoding='utf-8-sig')
     elif example and Path(example).is_file():
         text = Path(example).read_text(encoding='utf-8')
     else:
@@ -71,7 +73,7 @@ def write(dest, lang, example=None):
     new = set_language(text, lang)
     if path.is_file() and new == text:
         return path
-    tmp = path.with_name('totk.ini.tmp')
+    tmp = path.with_name(name + '.tmp')
     tmp.write_text(new, encoding='utf-8', newline='\n')
     os.replace(tmp, path)
     return path

@@ -112,7 +112,8 @@ def release_layout(root):
         ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
-        shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
+        shader_list=root / 'data' / 'shader_list.tsv',
+        ini_example=root / ('dkb.ini.example' if (root / 'dkb.ini.example').is_file() else 'totk.ini.example'),   # the dkb release ships the first
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
         # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
         temp=root / 'temp' if WIN else None,

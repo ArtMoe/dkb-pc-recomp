@@ -39,6 +39,6 @@ body:
     id: log
     attributes:
       label: Log
-      description: Attach logs\totk.log from the folder of dkb.exe. Lines with "validation", "shader" or "nvn2" are the interesting ones.
+      description: Attach logs\dkb.log from the folder of dkb.exe. Lines with "validation", "shader" or "nvn2" are the interesting ones.
     validations:
       required: true

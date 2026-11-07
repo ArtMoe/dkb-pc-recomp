@@ -73,8 +73,8 @@ def plain_tree(root):
 
 def plain_destination(dest, dlls=()):
     # profile/ and caches belong to the player and are never traversed or written by setup.
-    files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'totk.ini', 'totk.ini.tmp',
-             'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
+    files = (STATE, STATE + '.tmp', DEST_OWNER, '.dkb-setup.lock', 'dkb.ini', 'dkb.ini.tmp', 'totk.ini',
+             'totk.ini.tmp', 'romfs-index.bin', 'seed-nvn2.bin', 'dkb' + EXE, 'totk_xlate' + EXE, 'totk_xlate.id', *(p.name for p in dlls))
     for name in ('exefs', 'romfs', *files, *(name + '.setup-part' for name in files)):
         plain_tree(dest / name)
 
@@ -620,9 +620,9 @@ class Prepare(Step):
         return record.get('selftest') is True
 
     def run(self, ctx):
-        ensure_plain(ctx.dest / 'totk.ini')
-        ensure_plain(ctx.dest / 'totk.ini.tmp')
-        ini.write(ctx.dest, ctx.state['lang'], ctx.layout.ini_example)
+        for name in ('dkb.ini', 'dkb.ini.tmp', 'totk.ini'):
+            ensure_plain(ctx.dest / name)
+        ini.write(ctx.dest, ctx.state['lang'], ctx.layout.ini_example, 'dkb.ini', fallback='totk.ini')
         run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--selftest'])
         return {'selftest': True}
 

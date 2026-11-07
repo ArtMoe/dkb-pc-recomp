@@ -32,7 +32,7 @@ The rules are in [AGENTS.md](AGENTS.md), "Reusing code". In short: DKB Recomp is
 
 ## Reporting bugs
 
-Use the issue form. Include the commit you built (`git rev-parse --short HEAD`), your GPU, driver and Windows version, the log (`logs\totk.log` next to `dkb.exe`; after a crash, copy it before you start the game again), and the steps to reproduce. Describe what you see instead of attaching screenshots of the game. [docs/dkb-testing.md](docs/dkb-testing.md) covers building, running and the useful settings.
+Use the issue form. Include the commit you built (`git rev-parse --short HEAD`), your GPU, driver and Windows version, the log (`logs\dkb.log` next to `dkb.exe`; after a crash, copy it before you start the game again), and the steps to reproduce. Describe what you see instead of attaching screenshots of the game. [docs/dkb-testing.md](docs/dkb-testing.md) covers building, running and the useful settings.
 
 ## Pull requests
 
