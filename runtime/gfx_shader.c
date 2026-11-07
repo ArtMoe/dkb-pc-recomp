@@ -108,6 +108,7 @@ struct GfxShader {
     unsigned geometry_position;                         // v2: Position input/output, malformed interface bit 4
     Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
+    uint64_t origin;                                       // NVN 2 stage origin, set by note_origin (DKB_DUMP_SPV naming only)
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -1776,11 +1777,21 @@ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control,
     return t;
 }
 
+// DKB_DUMP_SPV only: remember which NVN 2 stage a shader was got for (the lowered code pointer is only known here).
+// Idempotent aligned 64-bit store; a shader shared by two stages keeps the last one.
+static void note_origin(const GfxShader *s, const uint8_t *code) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_DUMP_SPV") != NULL;
+    if (on && s) ((GfxShader *)s)->origin = nvn2_origin(code);
+}
+uint64_t gfx_shader_origin(const GfxShader *s) { return s->origin; }
+
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                 const uint8_t *c1, const GfxShaderAnswers *a) {
     Req r;
     if (!req_init(&r, stage, control, code, code_size, c1, a)) return NULL;
     const GfxShader *s = get_one(&r, stage, control, code, a);
+    note_origin(s, code);
     if (s) ans_note(&r, stage, control, code, a, s);
     return s;
 }
@@ -2135,6 +2146,7 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
     Req r;
     if (!req_init(&r, stage, control, code, code_size, NULL, a)) return NULL;
     const GfxShader *s = get_async_one(r, stage, control, code, a, pending);
+    note_origin(s, code);
     if (s) ans_note(&r, stage, control, code, a, s);
     return s;
 }

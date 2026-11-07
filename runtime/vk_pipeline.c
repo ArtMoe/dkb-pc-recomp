@@ -1066,10 +1066,35 @@ static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShader
     st->pNext = rq;
 }
 
-static VkShaderModule make_module_linked(const uint32_t *w, uint64_t words, int geometry_chain) {
+// DKB_DUMP_SPV=1 (debug only, for #75): the exact words handed to vkCreateShaderModule, after every rewrite, saved as
+// <log folder>/spv/<vs|fs|gs|cs>-<NVN 2 stage origin>-<FNV-1a 64 of the bytes>.spv, so a SPIR-V hash from a driver
+// crash dump can be matched to its NVN 2 stage. The files hold code derived from the game: local only, ignored by git.
+static void spv_dump(const uint32_t *w, uint64_t words, const GfxShader *src) {
+    static int on = -1;
+    static volatile int64_t total;
+    if (on < 0) on = cfg_get("TOTK_DUMP_SPV") != NULL;
+    const char *lp = on ? rt_log_path() : NULL, *cut = lp ? strrchr(lp, '/') : NULL;
+    if (!cut || !src) return;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i < words * 4; i++) h = (h ^ ((const uint8_t *)w)[i]) * 0x100000001b3ull;
+    static const char *const kind[] = {[GFX_STAGE_VS] = "vs", [GFX_STAGE_GS] = "gs", [GFX_STAGE_FS] = "fs", [GFX_STAGE_CS] = "cs"};
+    int st = gfx_shader_stage(src);
+    char dir[PLAT_PATH_MAX * 3], name[48], path[PLAT_PATH_MAX * 3 + 64];
+    snprintf(dir, sizeof dir, "%.*s/spv", (int)(cut - lp), lp);
+    snprintf(name, sizeof name, "%s-%016llx-%016llx.spv", st >= 0 && st < 6 && kind[st] ? kind[st] : "xx",
+             (unsigned long long)gfx_shader_origin(src), (unsigned long long)h);
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (plat_file_exists(path)) return;
+    if (__atomic_fetch_add(&total, (int64_t)words * 4, __ATOMIC_RELAXED) + (int64_t)words * 4 > (1ll << 30)) return;   // 1 GiB cap
+    plat_file_mkdir_p(dir);
+    if (plat_file_write_atomic(path, w, (size_t)words * 4)) rt_log("vk: spv dump %s %llu bytes", name, (unsigned long long)words * 4);
+}
+
+static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w, uint64_t words, int geometry_chain) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = geometry_chain ? spirv_fixup_linked(w, words, &fixed_n, 1) : spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    spv_dump(w, words, src);
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
@@ -1077,8 +1102,8 @@ static VkShaderModule make_module_linked(const uint32_t *w, uint64_t words, int 
     return r == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
 
-static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
-    return make_module_linked(w, words, 0);
+static VkShaderModule make_module(const GfxShader *src, const uint32_t *w, uint64_t words) {
+    return make_module_linked(src, w, words, 0);
 }
 
 // Experimental GS accepts a deliberately bounded interface: unpacked 32-bit
@@ -2011,19 +2036,19 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
             fcode = fpatched = r;
         }
         // A bound colour target outside the shader's output map gets write mask 0 (target_wmask)
-        if (fcode) fm = make_module(fcode, fw);
+        if (fcode) fm = make_module(s->fs, fcode, fw);
     }
     if (s->gs) {
         uint64_t gw = 0;
         const uint32_t *gcode = gfx_shader_spirv(s->gs, &gw);
         uint32_t off = binding_span(s->vs) - 1;
         uint32_t *patched = off && gcode ? spirv_rebind(gcode, gw, off) : NULL;
-        if (gcode && (!off || patched)) gm = make_module(patched ? patched : gcode, gw);
+        if (gcode && (!off || patched)) gm = make_module(s->gs, patched ? patched : gcode, gw);
         free(patched);
     }
     // Only a VS linked to GS uses the GS-chain dead-distance declaration policy.
     // Plain VS/FS modules retain their original fixup path and uploaded bytes.
-    vm = make_module_linked(vcode, vw, s->gs != NULL);
+    vm = make_module_linked(s->vs, vcode, vw, s->gs != NULL);
     free(vpatched), free(fpatched);
     VkPipeline pipe = VK_NULL_HANDLE;
     if (!vm || (s->fs && !fm) || (s->gs && !gm)) goto out;
@@ -2221,7 +2246,7 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
         sw = vw;
         if (pk->missing && (patched = spirv_add_outputs(vcode, vw, pk->missing, pk->fin, &n2))) vcode = patched, vw = n2;
         else if (pk->missing) LOG_ONCE("vk_pipeline: cannot add missing vertex outputs (mask %#x)", pk->missing);
-        if (!(m = make_module(vcode, vw))) goto out;
+        if (!(m = make_module(s->vs, vcode, vw))) goto out;
         st.stage = VK_SHADER_STAGE_VERTEX_BIT, st.module = m;
         pin_subgroup32(&st, &rq, scode, sw);
         pi.stageCount = 1, pi.pStages = &st, pi.pViewportState = &vp, pi.pRasterizationState = &rs;
@@ -2242,7 +2267,7 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
             }
             patched = fcode ? spirv_set(fcode, fw, 1) : NULL;
             free(d), free(at);
-            if (!patched || !(m = make_module(patched, fw))) goto out;
+            if (!patched || !(m = make_module(s->fs, patched, fw))) goto out;
             st.stage = VK_SHADER_STAGE_FRAGMENT_BIT, st.module = m;
             pin_subgroup32(&st, &rq, scode, sw);
             pi.stageCount = 1, pi.pStages = &st;
@@ -3197,7 +3222,7 @@ static void prebuild_start(void) {
 static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
-    VkShaderModule m = make_module(code, words);
+    VkShaderModule m = make_module(cs, code, words);
     if (!m) return VK_NULL_HANDLE;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqc;
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
