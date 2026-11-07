@@ -236,10 +236,11 @@ stage are skipped once with a log line, instead of failing the boot. The destruc
 native passthrough geometry stage (`TOTK_NATIVE_GS=1`), so it stays invisible for now; a vertex-stage replacement is
 separate work.
 
-Upscaler: the game's own compute upscaler (the dispatch that scales the graded frame to the output size) gives wrong
-results on Metal, a dark red and blue picture with blocks, for a reason not found yet. As a workaround, on MoltenVK only,
-that dispatch is replaced by a linear blit of its input (`vk_exec_draw.c` `mvk_upscale_blit`): the picture is right,
-without the game's reconstruction and sharpening. `DKB_MVK_UPSCALE_BLIT=0` runs the shader instead.
+Upscaler: the game's own compute upscaler (the dispatch that scales the graded frame to the output size; one variant
+for the fixed resolution of the intro, one for the dynamic resolution of play) gives wrong results on Metal, a dark red
+and blue picture with blocks, for a reason not found yet. As a workaround, on MoltenVK only, those dispatches are
+replaced by a linear blit of their input (`vk_exec_draw.c` `mvk_upscale_blit`): the picture is right, without the game's
+reconstruction and sharpening. `DKB_MVK_UPSCALE_BLIT=0` runs the shaders instead.
 
 ## Checks
 

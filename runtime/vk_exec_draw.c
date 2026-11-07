@@ -2825,9 +2825,11 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // (MVK_CONFIG_FAST_MATH_ENABLED=0), a write-only binding of the R11G11B10F output and the shared memory size (12 KiB)
 // are ruled out; the shader also uses subgroup shuffles and votes and texel fetches. Until it is found the dispatch is
 // replaced by a linear blit of its input (texture slot 0) to its output (image slot 1): the picture is right, without
-// the game's own reconstruction and sharpening. The shader is matched by the hash of its SPIR-V (the name TOTK_DUMP
-// prints), so a translator change that alters it turns this off by itself. Desktop drivers never take this path.
-#define MVK_UPSCALE_CS 0x3f3390cfdfa1f9e8ull
+// the game's own reconstruction and sharpening. The shaders are matched by the hash of their SPIR-V (the name TOTK_DUMP
+// prints), so a translator change that alters them turns this off by itself. Desktop drivers never take this path.
+// The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
+// after the intro, e.g. 2095x1179 in).
+static int mvk_upscale_cs(uint64_t h) { return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full; }
 static uint64_t spirv_fnv(const GfxShader *s) {
     static const GfxShader *last;
     static uint64_t last_h;
@@ -2845,7 +2847,7 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
         const char *e = getenv("DKB_MVK_UPSCALE_BLIT");
         on = vk_ctx()->no_geometry && !(e && !strcmp(e, "0"));
     }
-    if (!on || spirv_fnv(cs) != MVK_UPSCALE_CS) return 0;
+    if (!on || !mvk_upscale_cs(spirv_fnv(cs))) return 0;
     uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
     view_t vs, vd;
     int hvs = 0, hvd = 0;
@@ -2860,7 +2862,7 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
     }
     static int logged;
     if (!logged++)
-        rt_log("vk_exec: MoltenVK workaround: the game's upscaler dispatch is a linear blit %ux%u -> %ux%u "
+        rt_log("vk_exec: MoltenVK workaround: the game's upscaler dispatches are linear blits (first %ux%u -> %ux%u) "
                "(DKB_MVK_UPSCALE_BLIT=0 runs the shader)", s->width, s->height, t->width, t->height);
     VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                       .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}};
