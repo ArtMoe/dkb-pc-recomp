@@ -258,6 +258,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
 
 static float mouse_sens = -1;              // TOTK_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
 static unsigned mouse_sens_seen;
+static uint64_t mouse_direct_frame = ~0ull;  // most recent manual camera update, under lock
 
 static float mouse_sens_get(void) {
     unsigned ver = cfg_version();
@@ -268,17 +269,52 @@ static float mouse_sens_get(void) {
     return mouse_sens;
 }
 
+// Under lock. Input continues polling when the camera patch is off, so it can enable the
+// callbacks again without a restart. The callbacks also check this before consuming motion.
+static int mouse_direct_mode(void) {
+    static int patch = -2, on = -1;
+    static unsigned seen;
+    // Patch-set indices are fixed for this executable, including a missing set (-1).
+    if (patch == -2) patch = rt_patch_set("mousecamera");
+    unsigned ver = cfg_version();
+    if (on < 0 || seen != ver) {
+        on = cfg_bool("TOTK_MOUSE_CAMERA");
+        seen = ver;
+        rt_patch_switch(patch, on);
+        if (!on) mouse_direct_frame = ~0ull;
+    }
+    return on;
+}
 
 // The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`.
 static void mouse_camera(int32_t out[2]) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
+    static int resume;
     uint64_t now = plat_now_ns();
     int32_t dx, dy;
+    uint64_t current_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (mouse_direct_frame != ~0ull && current_frame - mouse_direct_frame <= 2 && ikb_captured()) {
+        // The native orbit consumes raw motion itself. Do not also turn it into stick input.
+        held[0] = held[1] = 0;
+        frame = ~0ull;
+        resume = 1;
+        out[0] = out[1] = 0;
+        return;
+    }
     if (!ikb_captured()) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
         frame = ~0ull;
+        resume = 0;
+    } else if (resume) {
+        // Counts left by the direct camera can span several frames. Drop that first batch
+        // and start a fresh interval instead of converting it with the 4 ms minimum dt.
+        ikb_mouse_take(&dx, &dy);
+        held[0] = held[1] = 0;
+        frame = current_frame;
+        t0 = now;
+        resume = 0;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         double age = frame == ~0ull ? 0 : (double)(now - t0) / 1e9;
@@ -468,6 +504,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
+    mouse_direct_mode();
     if (!state) start();
     if (state > 0) {
         binds_refresh();
@@ -519,6 +556,39 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
 // g_block: 0 off, 1 text entry open, 2 closed, waiting for the release. The cursor is released while it is open.
 static volatile int32_t g_block;
 static volatile int32_t g_menu;   // the in-game menu, the same way (input_menu)
+
+int input_mouse_direct(float degrees[2]) {
+    plat_mutex_lock(&lock);
+    if (!mouse_direct_mode()) {
+        degrees[0] = degrees[1] = 0;
+        plat_mutex_unlock(&lock);
+        return 0;   // leave raw motion for the original mouse-to-stick path
+    }
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    // A slow frame must retain mouse distance. Only leaving the manual camera drops pending motion.
+    int continuous = mouse_direct_frame != ~0ull && frame - mouse_direct_frame <= 2;
+    int32_t dx, dy;
+    ikb_mouse_take(&dx, &dy);
+    mouse_direct_frame = frame;
+    const char *in = cfg_get("TOTK_INPUT");
+    int enabled = ikb_captured() && ikb_foreground() && !g_block && !g_menu &&
+                  !(in && !strcmp(in, "none"));
+    // Degrees per raw count at sensitivity 1; the setting scales mouse distance linearly.
+    float scale = mouse_sens_get() * 0.064f;
+    // Discard motion accumulated while a scripted camera or a menu owned the view.
+    degrees[0] = enabled && continuous ? dx * scale : 0;
+    degrees[1] = enabled && continuous ? dy * scale : 0;
+    plat_mutex_unlock(&lock);
+    return enabled && scale > 0;
+}
+
+int input_mouse_direct_recent(void) {
+    plat_mutex_lock(&lock);
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    int recent = mouse_direct_frame != ~0ull && frame - mouse_direct_frame <= 2;
+    plat_mutex_unlock(&lock);
+    return recent;
+}
 
 int input_cursor_allowed(void) {
     const char *in = cfg_get("TOTK_INPUT");

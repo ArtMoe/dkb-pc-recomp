@@ -45,6 +45,12 @@ int input_flight_key(void);
 void input_cursor_suspend(int on);
 int input_cursor_released(void);   // Esc or a non-client activation released the cursor (probe)
 
+// Manual Bananza orbit: consume raw motion once per camera update as degrees, under the input lock.
+// Returns 0 while uncaptured or blocked. Other camera modes retain the mouse-to-stick fallback.
+int input_mouse_direct(float degrees[2]);
+// Whether the direct camera sampled in the last two presented frames; expires activity when it stops updating.
+int input_mouse_direct_recent(void);
+
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
