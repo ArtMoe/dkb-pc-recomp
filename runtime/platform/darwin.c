@@ -978,7 +978,8 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     uint64_t esr = (uint64_t)u->uc_mcontext->__es.__esr;
     unsigned ec = (unsigned)((esr >> 26) & 0x3f);   // 0x24/0x25 data abort, 0x20/0x21 instruction abort
-    if (sig == SIGSEGV && fault_hook && (ec == 0x24 || ec == 0x25) && (esr & (1u << 6)) &&
+    // XNU reports a write to a read-only page as SIGBUS (an access-protection fault on a mapped page), not SIGSEGV.
+    if ((sig == SIGSEGV || sig == SIGBUS) && fault_hook && (ec == 0x24 || ec == 0x25) && (esr & (1u << 6)) &&
         fault_hook((uint64_t)(uintptr_t)si->si_addr))
         return;
     uintptr_t rip = (uintptr_t)arm_thread_state64_get_pc(u->uc_mcontext->__ss);
