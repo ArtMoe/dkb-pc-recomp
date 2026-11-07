@@ -270,13 +270,14 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 def other_os(name):
     """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, totk.rc) off Windows, the SDL window's
-    (*_sdl.*) and platform/linux.c on Windows. On Darwin platform/darwin.c replaces both win32.c and linux.c."""
+    (*_sdl.*), platform/linux.c and platform/darwin.c on Windows, platform/darwin.c on Linux. On Darwin
+    platform/darwin.c replaces both win32.c and linux.c."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
-        return stem.endswith('_sdl') or name == 'linux.c'
+        return stem.endswith('_sdl') or name in ('linux.c', 'darwin.c')
     if DARWIN:
         return stem.endswith('_win') or name in ('win32.c', 'totk.rc', 'linux.c')
-    return stem.endswith('_win') or name in ('win32.c', 'totk.rc')
+    return stem.endswith('_win') or name in ('win32.c', 'totk.rc', 'darwin.c')
 
 
 def runtime_sources(skip=()):
