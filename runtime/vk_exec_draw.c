@@ -2818,21 +2818,27 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
-// WORKAROUND, MoltenVK only (DKB_MVK_UPSCALE_BLIT, on by default there, 0 turns it off): Bananza's own compute upscaler
-// (the dispatch that scales the graded frame to the output size, 1920x1080 -> 2880x1620 docked, 1280x720 -> 1920x1080
-// handheld) gives wrong results on Metal. Its input is right; its output keeps a dim red channel, little green and blue,
-// and blocks, so every scene is dark red and blue. The cause is not found: fast math off
-// (MVK_CONFIG_FAST_MATH_ENABLED=0), a write-only binding of the R11G11B10F output and the shared memory size (12 KiB)
-// are ruled out; the shader also uses subgroup shuffles and votes and texel fetches. Until it is found the dispatch is
-// replaced by a linear blit of its input (texture slot 0) to its output (image slot 1): the picture is right, without
-// the game's own reconstruction and sharpening. The shaders are matched by the hash of their SPIR-V (the name TOTK_DUMP
-// prints), so a translator change that alters them turns this off by itself. Desktop drivers never take this path.
+// WORKAROUND, MoltenVK only (TOTK_MVK_UPSCALE_BLIT / DKB_MVK_UPSCALE_BLIT, on by default there, 0 turns it off):
+// Bananza's own compute upscaler (the dispatch that scales the graded frame to the output size) gives wrong results on
+// Metal. Its input is right; its output keeps a dim red channel, little green and blue, and blocks, so every scene is
+// dark red and blue. The cause is not found: fast math off (MVK_CONFIG_FAST_MATH_ENABLED=0), a write-only binding of the
+// R11G11B10F output and the shared memory size (12 KiB) are ruled out; the shader also uses subgroup shuffles and votes
+// and texel fetches. Until it is found the dispatch is replaced by a linear blit of its input (texture slot 0) to its
+// output (image slot 1): the picture is right, without the game's own reconstruction and sharpening. The shaders are
+// matched by the hash of their SPIR-V (the name TOTK_DUMP prints), so a translator change that alters them turns this
+// off by itself. Other drivers never take this path.
+// Whole images, mip 0, layer 0: the game makes each input texture at the size it renders (1920x1080 and 1280x720 for
+// the intro, the current dynamic resolution such as 2095x1179 in play, a new texture when it changes), so the full
+// extent is the rendered area; a run in the mining tunnel showed no stretch or border.
 // The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
 // after the intro, e.g. 2095x1179 in).
 static int mvk_upscale_cs(uint64_t h) { return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full; }
+
+// FNV-1a of a shader's SPIR-V, cached for the last shader of the calling thread (dispatches may be recorded on more
+// than one).
 static uint64_t spirv_fnv(const GfxShader *s) {
-    static const GfxShader *last;
-    static uint64_t last_h;
+    static _Thread_local const GfxShader *last;
+    static _Thread_local uint64_t last_h;
     if (s == last) return last_h;
     uint64_t words = 0, h = 0xcbf29ce484222325ull;
     const uint8_t *b = (const uint8_t *)gfx_shader_spirv(s, &words);
@@ -2841,29 +2847,42 @@ static uint64_t spirv_fnv(const GfxShader *s) {
     return h;
 }
 
+// Whether the device can blit from format f with linear filtering (src) or into it (dst), optimal tiling.
+static int blit_ok(VkFormat f, int dst) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(vk_ctx()->phys, f, &fp);
+    VkFormatFeatureFlags want = dst ? VK_FORMAT_FEATURE_BLIT_DST_BIT
+                                    : VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (fp.optimalTilingFeatures & want) == want;
+}
+
+// Records the blit in place of the dispatch; 0 when this is not the upscaler or the blit cannot be done (the shader
+// then runs). The caller has already put a full barrier before it (vk_exec_barrier in op_dispatch) and puts one after.
 static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
     static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("DKB_MVK_UPSCALE_BLIT");
-        on = vk_ctx()->no_geometry && !(e && !strcmp(e, "0"));
-    }
+    if (on < 0) on = vk_caps.moltenvk && cfg_bool("TOTK_MVK_UPSCALE_BLIT");
     if (!on || !mvk_upscale_cs(spirv_fnv(cs))) return 0;
     uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
     view_t vs, vd;
     int hvs = 0, hvd = 0;
     const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
     const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
-    if (!s || !t || s->samples > 1 || t->samples > 1 || s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D) {
+    const char *why = !s || !t                                                     ? "its images do not resolve"
+                    : s->samples > 1 || t->samples > 1                             ? "an image is multisampled"
+                    : s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D ? "an image is not 2D"
+                    : !(s->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || !(t->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                        ? "an image lacks transfer usage"
+                    : !blit_ok(s->format, 0) || !blit_ok(t->format, 1) ? "the formats cannot be blitted linearly"
+                                                                       : NULL;
+    if (why) {
         static int warned;
-        if (!warned++)
-            rt_log("vk_exec: MoltenVK workaround: the upscaler's images do not resolve (tex %#llx -> %p, img %#llx -> %p); "
-                   "the shader runs", (unsigned long long)hs, (const void *)s, (unsigned long long)hd, (const void *)t);
+        if (!warned++) rt_log("vk_exec: MoltenVK workaround: the upscaler runs as a shader: %s", why);
         return 0;
     }
     static int logged;
     if (!logged++)
-        rt_log("vk_exec: MoltenVK workaround: the game's upscaler dispatches are linear blits (first %ux%u -> %ux%u) "
-               "(DKB_MVK_UPSCALE_BLIT=0 runs the shader)", s->width, s->height, t->width, t->height);
+        rt_log("vk_exec: MoltenVK workaround: the game's upscaler dispatches are linear blits (first %ux%u -> %ux%u, "
+               "TOTK_MVK_UPSCALE_BLIT=0 runs the shaders)", s->width, s->height, t->width, t->height);
     VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                       .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}};
     bl.srcOffsets[1] = (VkOffset3D){(int32_t)s->width, (int32_t)s->height, 1};
@@ -2893,8 +2912,12 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
-    if (!mvk_upscale_blit(ex, cs)) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
+    int blit = mvk_upscale_blit(ex, cs);
+    if (!blit) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
+    // The blit is a transfer write, where what follows expects a compute-shader write: a full barrier makes it visible
+    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads).
+    if (blit) vk_exec_barrier(ex);
     note_work(ex, 2, (uint64_t)d->x * (uint64_t)d->y * (uint64_t)d->z);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }

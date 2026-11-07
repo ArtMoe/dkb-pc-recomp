@@ -240,7 +240,7 @@ Upscaler: the game's own compute upscaler (the dispatch that scales the graded f
 for the fixed resolution of the intro, one for the dynamic resolution of play) gives wrong results on Metal, a dark red
 and blue picture with blocks, for a reason not found yet. As a workaround, on MoltenVK only, those dispatches are
 replaced by a linear blit of their input (`vk_exec_draw.c` `mvk_upscale_blit`): the picture is right, without the game's
-reconstruction and sharpening. `DKB_MVK_UPSCALE_BLIT=0` runs the shaders instead.
+reconstruction and sharpening. `TOTK_MVK_UPSCALE_BLIT=0` (or `DKB_MVK_UPSCALE_BLIT=0`) runs the shaders instead.
 
 ## Checks
 
