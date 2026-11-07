@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cfg.h"
 #include "host.h"
@@ -464,8 +465,32 @@ void vk_device_fault_report(VkResult r) {
     VkDeviceFaultVendorInfoEXT *vi = calloc(n.vendorInfoCount + 1, sizeof *vi);
     VkDeviceFaultInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, .pAddressInfos = ai, .pVendorInfos = vi};
     uint64_t binary = n.vendorBinarySize;
-    n.vendorBinarySize = 0;   // the vendor binary is not fetched; its size alone is logged
+    // The vendor binary is fetched only under DKB_GPU_CHECKPOINTS=1 and within a sane size; otherwise its size alone is
+    // logged. Per the spec the first call returns sizes and the second fills the data pointers.
+    void *bin = NULL;
+    if (vk_checkpoints_on() && binary > 0 && binary <= (64ull << 20)) bin = malloc((size_t)binary);
+    n.vendorBinarySize = bin ? binary : 0;
+    info.pVendorBinaryData = bin;
     if (q == VK_SUCCESS && ai && vi) q = get(c->device, &n, &info);
+    if (bin && (q == VK_SUCCESS || q == VK_INCOMPLETE)) {
+        // Best effort: any failure here is a log line only. The dump can hold derived shader code, so it stays in the
+        // local logs folder next to dkb.log and is never attached to reports.
+        const VkDeviceFaultVendorBinaryHeaderVersionOneEXT *h = bin;
+        if (n.vendorBinarySize >= sizeof *h)
+            rt_log("vk: device fault binary header: vendor %#x device %#x driver %#x app name offset %u app version %#x "
+                   "engine version %#x api version %#x", h->vendorID, h->deviceID, h->driverVersion, h->applicationNameOffset,
+                   h->applicationVersion, h->engineVersion, h->apiVersion);
+        const char *lp = rt_log_path();
+        char path[PLAT_PATH_MAX * 3 + 48];
+        const char *cut = lp ? strrchr(lp, '/') : NULL;
+        if (cut) {
+            snprintf(path, sizeof path, "%.*s/dkb-fault-%llu.bin", (int)(cut - lp), lp, (unsigned long long)time(NULL));
+            if (plat_file_write_atomic(path, bin, (size_t)n.vendorBinarySize))
+                rt_log("vk: device fault binary saved: %s (%llu bytes)", path, (unsigned long long)n.vendorBinarySize);
+            else rt_log("vk: device fault binary: cannot write %s", path);
+        } else rt_log("vk: device fault binary not saved (no log file)");
+    }
+    free(bin);
     if (q != VK_SUCCESS && q != VK_INCOMPLETE) {
         rt_log("vk: device lost; vkGetDeviceFaultInfoEXT failed (%d)", (int)q);
     } else {
