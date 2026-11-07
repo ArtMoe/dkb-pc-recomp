@@ -999,7 +999,13 @@ static void core_kick(void) {
         if (v < 0) continue;
         claimed |= 1 << v;
         RtThread *o = g_core_owner[v];
+        // A waiter that found no owner to interrupt sleeps without a timeout in core_take; it only calls ap_try again
+        // when woken. So a waiter whose target changes, or whose target is marked just now, is woken to interrupt it:
+        // otherwise an owner in game code with no SVC or indirect call (a long loop) keeps its core and the waiter
+        // sleeps for good.
+        int wake = g_ap_int && (w[k]->target != o || !o->preempt);
         w[k]->target = o;
+        if (wake) plat_cond_signal(&w[k]->cv);
         if (o->preempt) continue;
         if (rt_trace & RT_TRACE_SCHED) {
             o->pre_since = kern_now_ns();
