@@ -1090,14 +1090,63 @@ static void spv_dump(const uint32_t *w, uint64_t words, const GfxShader *src) {
     if (plat_file_write_atomic(path, w, (size_t)words * 4)) rt_log("vk: spv dump %s %llu bytes", name, (unsigned long long)words * 4);
 }
 
+// DKB_SPV_OVERRIDE=<16-hex FNV-1a 64 name>:<path.spv>[,...] (debug only, for #75, max 8 entries): a module whose final
+// SPIR-V hashes to <name> (the hash in the spv_dump file name) is created from the file instead. Parsed once.
+static uint32_t *spv_override(const uint32_t *w, uint64_t words, uint64_t *out_words) {
+    static struct { uint64_t h; char path[PLAT_PATH_MAX * 3]; int bad; } ent[8];
+    static int n = -1;
+    if (n < 0) {
+        n = 0;
+        const char *e = cfg_get("TOTK_SPV_OVERRIDE");
+        while (e && *e && n < 8) {
+            char *end;
+            unsigned long long h = strtoull(e, &end, 16);
+            const char *p = end + 1, *q = strchr(p, ',');
+            size_t len = q ? (size_t)(q - p) : strlen(p);
+            if (*end == ':' && len && len < sizeof ent[0].path) {
+                ent[n].h = h;
+                memcpy(ent[n].path, p, len), ent[n].path[len] = 0;
+                n++;
+            }
+            e = q ? q + 1 : NULL;
+        }
+    }
+    if (!n) return NULL;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i < words * 4; i++) h = (h ^ ((const uint8_t *)w)[i]) * 0x100000001b3ull;
+    for (int i = 0; i < n; i++) {
+        if (ent[i].h != h || ent[i].bad) continue;
+        FILE *f = fopen(ent[i].path, "rb");
+        long sz = -1;
+        if (f && fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
+        uint32_t *buf = sz > 0 && sz % 4 == 0 && sz <= (16 << 20) && fseek(f, 0, SEEK_SET) == 0 ? malloc((size_t)sz) : NULL;
+        if (buf && fread(buf, 1, (size_t)sz, f) == (size_t)sz) {
+            fclose(f);
+            rt_log("vk: SPIR-V override %016llx <- %s", (unsigned long long)h, ent[i].path);
+            *out_words = (uint64_t)sz / 4;
+            return buf;
+        }
+        if (f) fclose(f);
+        free(buf);
+        ent[i].bad = 1;
+        rt_log("vk: SPIR-V override %016llx: cannot use %s (missing, not a multiple of 4 bytes or over 16 MiB); keeping the original",
+               (unsigned long long)h, ent[i].path);
+    }
+    return NULL;
+}
+
 static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w, uint64_t words, int geometry_chain) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = geometry_chain ? spirv_fixup_linked(w, words, &fixed_n, 1) : spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
     spv_dump(w, words, src);
+    uint64_t ov_n = 0;
+    uint32_t *ov = spv_override(w, words, &ov_n);
+    if (ov) w = ov, words = ov_n;
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
+    free(ov);
     free(fixed);
     return r == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
