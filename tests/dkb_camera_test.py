@@ -30,6 +30,7 @@ code = r'''
 #include <math.h>
 #include "cfg.h"
 #include "platform/platform.h"
+const int rt_game_version = 0; // Bananza; cfg_meta_at filters game-specific settings
 static PlatMutex lock=PLAT_MUTEX_INIT;
 static int g_block,g_menu;
 static struct { uint64_t frames; } gfx_counters;
@@ -102,5 +103,6 @@ for name, sources in [
     subprocess.run([args.cc, '-O2', '-fno-strict-aliasing', '-ffunction-sections', '-fdata-sections',
                     '-fuse-ld=lld', '-Wl,--gc-sections',
                     *(['-Wl,--exclude-all-symbols'] if os.name == 'nt' else []),
+                    *(['-pthread'] if os.name != 'nt' else []),
                     '-I', str(src/'runtime'), *[str(p) for p in sources], '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=20)

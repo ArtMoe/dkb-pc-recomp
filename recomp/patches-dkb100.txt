@@ -67,6 +67,7 @@ set mousecamera TOTK_MOUSE_CAMERA 0
 # Keep each original instruction, then call the host adapter in runtime/dkb_camera.c. The four
 # dispatch addresses are outside main, at patch page +0x200/+0x210/+0x220/+0x230. These functions
 # save LR in their prologues and restore it after the sites, so the inserted BL preserves returns.
+# All seven BL immediates below assume the patch page is at main+0x2450000 (recomp/layout.py).
 site mousecamera main 41b35c f9405808 f9405808 9480d3a9   # yaw begin: x0 is the follow camera
 site mousecamera main 41b4e0 6d42a3e9 6d42a3e9 9480d34c   # yaw end: x19 is the follow camera
 site mousecamera main 7f209c d000cdb4 d000cdb4 94717861   # pitch begin: x19 is the vertical controller
