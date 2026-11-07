@@ -35,14 +35,53 @@ static volatile uint32_t cp_tag_n;   // next tag slot, see vk_checkpoint_tag
 static uint32_t cp_slot(const void *p) { return (uint32_t)(((uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull) >> 51); }
 
 // Device address bindings (VK_EXT_device_address_binding_report, with the checkpoints on): the driver reports every
-// range of GPU virtual addresses it binds or unbinds to a debug utils messenger. The newest AB_RING events are kept so
-// that the report can name what a faulting address belonged to. Sequence numbers count every event, so a wrapped ring
-// shows how many are gone.
-enum { AB_RING = 4096 };
-typedef struct { uint64_t seq, base, size, handle; uint32_t unbind, flags, type; } AbEvent;
-static AbEvent ab_ring[AB_RING];
-static uint64_t ab_n;
+// range of GPU virtual addresses it binds or unbinds to a debug utils messenger, tens of thousands of events in a long
+// run. A ring of the newest events loses the mapping of a long-lived allocation, so the bound ranges are kept as a live
+// set (open addressing keyed by base address, linear probing, backward-shift delete: a bind inserts, an unbind removes)
+// and only the newest AB_UNBINDS unbinds are kept, to name a range freed before a fault (use after free). The callback
+// runs on driver threads, so one spinlock guards both; the device-lost report only try-locks it.
+enum { AB_LIVE = 1 << 17, AB_UNBINDS = 8192 };
+typedef struct { uint64_t seq, base, size, handle; uint32_t flags, type; } AbEvent;   // seq 0 marks a free slot
+static AbEvent ab_live[AB_LIVE];
+static AbEvent ab_unb[AB_UNBINDS];
+static uint64_t ab_n, ab_nlive, ab_dropped, ab_nunb;   // events seen, live entries, binds not stored, unbinds seen
+static volatile int ab_lock;
 static VkDebugUtilsMessengerEXT ab_messenger;
+
+static uint32_t ab_home(uint64_t base) { return (uint32_t)((base * 0x9E3779B97F4A7C15ull) >> 47); }   // 17 bits
+static void ab_acquire(void) { while (__atomic_exchange_n(&ab_lock, 1, __ATOMIC_ACQUIRE)) { } }
+static void ab_release(void) { __atomic_store_n(&ab_lock, 0, __ATOMIC_RELEASE); }
+
+// Caller holds the lock.
+static void ab_bind(const AbEvent *e) {
+    if (ab_nlive >= AB_LIVE - 1) { ab_dropped++; return; }   // keep one slot free so probes terminate
+    uint32_t i = ab_home(e->base);
+    while (ab_live[i].seq) i = (i + 1) & (AB_LIVE - 1);
+    ab_live[i] = *e;
+    ab_nlive++;
+}
+
+static void ab_unbind(const AbEvent *e) {
+    uint32_t i = ab_home(e->base), hit = AB_LIVE;
+    for (; ab_live[i].seq; i = (i + 1) & (AB_LIVE - 1)) {
+        if (ab_live[i].base != e->base) continue;
+        if (ab_live[i].handle == e->handle) { hit = i; break; }
+        if (hit == AB_LIVE) hit = i;   // same base, other handle: take it if nothing matches better
+    }
+    if (hit != AB_LIVE) {
+        // Backward-shift delete: pull later entries of the probe run into the hole when their home allows it.
+        uint32_t j = hit;
+        for (;;) {
+            j = (j + 1) & (AB_LIVE - 1);
+            if (!ab_live[j].seq) break;
+            uint32_t h = ab_home(ab_live[j].base);
+            if (((j - h) & (AB_LIVE - 1)) >= ((j - hit) & (AB_LIVE - 1))) ab_live[hit] = ab_live[j], hit = j;
+        }
+        memset(&ab_live[hit], 0, sizeof ab_live[hit]);
+        ab_nlive--;
+    }
+    ab_unb[ab_nunb++ % AB_UNBINDS] = *e;   // kept even if the bind was never seen or was dropped
+}
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL ab_callback(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
                                                   VkDebugUtilsMessageTypeFlagsEXT type,
@@ -51,16 +90,14 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL ab_callback(VkDebugUtilsMessageSeverityFla
     for (const VkBaseInStructure *s = d->pNext; s; s = s->pNext) {
         if (s->sType != VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT) continue;
         const VkDeviceAddressBindingCallbackDataEXT *b = (const void *)s;
-        uint64_t n = __atomic_fetch_add(&ab_n, 1, __ATOMIC_RELAXED);
-        AbEvent *e = &ab_ring[n % AB_RING];
-        // Seqlock: seq 0 while the slot is rewritten, n + 1 once complete; a reader skips a slot whose seq changed.
-        __atomic_store_n(&e->seq, 0, __ATOMIC_RELAXED);
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        e->base = b->baseAddress, e->size = b->size, e->unbind = b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT;
-        e->flags = b->flags;
-        e->type = d->objectCount ? (uint32_t)d->pObjects[0].objectType : 0;
-        e->handle = d->objectCount ? d->pObjects[0].objectHandle : 0;
-        __atomic_store_n(&e->seq, n + 1, __ATOMIC_RELEASE);   // 0 also marks a slot never written
+        AbEvent e = {.base = b->baseAddress, .size = b->size, .flags = b->flags,
+                     .type = d->objectCount ? (uint32_t)d->pObjects[0].objectType : 0,
+                     .handle = d->objectCount ? d->pObjects[0].objectHandle : 0};
+        ab_acquire();
+        e.seq = ++ab_n;
+        if (b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT) ab_unbind(&e);
+        else ab_bind(&e);
+        ab_release();
     }
     return VK_FALSE;
 }
@@ -69,41 +106,55 @@ static const char *ab_object(uint32_t t) {
     return t == VK_OBJECT_TYPE_DEVICE_MEMORY ? "memory" : t == VK_OBJECT_TYPE_BUFFER ? "buffer" : t == VK_OBJECT_TYPE_IMAGE ? "image" : "object";
 }
 
-static void ab_print(const char *why, const AbEvent *e) {
-    rt_log("vk: address binding #%llu %s: %s %#llx..%#llx (%llu bytes) %s %#llx%s", (unsigned long long)e->seq, why,
-           e->unbind ? "unbind" : "bind", (unsigned long long)e->base, (unsigned long long)(e->base + e->size),
-           (unsigned long long)e->size, ab_object(e->type), (unsigned long long)e->handle,
-           e->flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT ? " (driver internal)" : "");
+static void ab_print(const char *why, const AbEvent *e, uint64_t a) {
+    rt_log("vk: address binding #%llu %s: %#llx..%#llx (%llu bytes) %s %#llx%s, address is %#llx %s the start", (unsigned long long)e->seq, why,
+           (unsigned long long)e->base, (unsigned long long)(e->base + e->size), (unsigned long long)e->size,
+           ab_object(e->type), (unsigned long long)e->handle,
+           e->flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT ? " (driver internal)" : "",
+           (unsigned long long)(a >= e->base ? a - e->base : e->base - a), a >= e->base ? "past" : "before");
 }
 
 void vk_crumbs_report_address(uint64_t a) {
     if (!ab_messenger) return;
-    uint64_t total = __atomic_load_n(&ab_n, __ATOMIC_ACQUIRE);
-    uint64_t first = total > AB_RING ? total - AB_RING : 0;
+    // The device is lost, but a driver thread may still hold the lock (or have died holding it): spin briefly, then read
+    // without it. An unlocked read can show a torn entry, never crash: the tables are static.
+    int locked = 0;
+    for (uint32_t spin = 0; spin < 200000 && !locked; spin++) locked = !__atomic_exchange_n(&ab_lock, 1, __ATOMIC_ACQUIRE);
+    uint64_t total = ab_n;
+    rt_log("vk: address %#llx: %llu binding events seen, %llu live ranges, %llu binds dropped (live set full)%s",
+           (unsigned long long)a, (unsigned long long)total, (unsigned long long)ab_nlive,
+           (unsigned long long)ab_dropped, locked ? "" : "; lock busy, reading the tables without it (best effort)");
     uint32_t shown = 0;
-    const AbEvent *near = NULL;
-    rt_log("vk: address %#llx: %llu binding events seen, the newest %llu kept", (unsigned long long)a,
-           (unsigned long long)total, (unsigned long long)(total - first));
-    static AbEvent keep;   // copy of the nearest candidate, so later rewrites of its slot do not matter
-    for (uint64_t s = first; s < total; s++) {   // oldest first, so an unbind after a bind reads in order
-        const AbEvent *slot = &ab_ring[s % AB_RING];
-        if (__atomic_load_n(&slot->seq, __ATOMIC_ACQUIRE) != s + 1) continue;
-        AbEvent copy = *slot;
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (__atomic_load_n(&slot->seq, __ATOMIC_RELAXED) != s + 1) continue;   // rewritten while copying
-        const AbEvent *e = &copy;
+    const AbEvent *below = NULL, *above = NULL;
+    for (uint32_t i = 0; i < AB_LIVE; i++) {
+        const AbEvent *e = &ab_live[i];
+        if (!e->seq) continue;
         if (a >= e->base && a - e->base < e->size) {
-            if (shown++ < 16) ab_print("contains the address", e);
-        } else if (!e->unbind && e->base + e->size <= a && a - (e->base + e->size) < (1u << 20) &&
-                   (!near || e->base + e->size >= near->base + near->size)) {
-            keep = copy, near = &keep;
+            if (shown++ < 16) ab_print("is live and contains the address", e, a);
+        } else if (e->base + e->size <= a) {
+            if (!below || e->base + e->size > below->base + below->size) below = e;
+        } else if (e->base > a && (!above || e->base < above->base)) {
+            above = e;
         }
     }
-    if (!shown && near) ab_print("nearest bind below the address (within 1 MiB)", near);
-    else if (!shown)
-        rt_log("vk: address %#llx: no binding contains it or ends within 1 MiB below it%s", (unsigned long long)a,
-               total > AB_RING ? " (ring wrapped: older bindings are gone)" : "");
-    // ponytail: the nearest-below search looks at binds only and ignores later unbinds of them; read the sequence numbers.
+    if (shown > 16) rt_log("vk: address %#llx: %u more live ranges contain it", (unsigned long long)a, shown - 16);
+    if (!shown) {
+        rt_log("vk: address %#llx: no live range contains it", (unsigned long long)a);
+        if (below) ab_print("nearest live range below", below, a);
+        if (above) ab_print("nearest live range above", above, a);
+    }
+    uint64_t nunb = ab_nunb, first = nunb > AB_UNBINDS ? nunb - AB_UNBINDS : 0;
+    uint32_t freed = 0;
+    for (uint64_t k = nunb; k > first && freed < 8; k--) {   // newest first
+        const AbEvent *e = &ab_unb[(k - 1) % AB_UNBINDS];
+        if (!e->seq || a < e->base || a - e->base >= e->size) continue;
+        freed++;
+        rt_log("vk: address %#llx: UNBOUND before the fault, %llu binding events ago:", (unsigned long long)a,
+               (unsigned long long)(total - e->seq));
+        ab_print("(unbind)", e, a);
+    }
+    if (!freed) rt_log("vk: address %#llx: no recent unbind (last %u kept) contains it", (unsigned long long)a, AB_UNBINDS);
+    if (locked) ab_release();
 }
 
 void vk_crumbs_init(VkCtx *c) {
@@ -155,8 +206,11 @@ void vk_crumbs_release(void) {
         if (f) f(c->instance, ab_messenger, NULL);
     }
     ab_messenger = VK_NULL_HANDLE;
-    ab_n = 0;
-    memset(ab_ring, 0, sizeof ab_ring);
+    ab_acquire();
+    ab_n = ab_nlive = ab_dropped = ab_nunb = 0;
+    memset(ab_live, 0, sizeof ab_live);
+    memset(ab_unb, 0, sizeof ab_unb);
+    ab_release();
     cp_tag_n = 0;
     if (buf && c) vmaDestroyBuffer(c->vma, buf, alloc);
     buf = VK_NULL_HANDLE, alloc = NULL, words = NULL, write_marker = NULL;
