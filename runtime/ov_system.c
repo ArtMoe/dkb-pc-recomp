@@ -72,6 +72,9 @@ static const char *switch_language(const char *tag) {
         }
         p += k;
     }
+    // Bananza ships Portuguese only as Mals/USpt (the Americas), with no EUpt for plain "pt", so every Portuguese
+    // locale, Portugal's included, asks for pt-BR; "pt" alone would fall back to English.
+    if (!strcmp(lang, "pt") && !rt_game_version) return "pt-BR";
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
         !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
