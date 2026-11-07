@@ -490,17 +490,21 @@ __asm__(".text\n"
         "    jmpq *-8(%rsp)\n"
         ".seh_endproc\n");
 #elif defined(__aarch64__)
-// The AArch64 version. AArch64 has no red zone and no flags in memory: the frame goes below the interrupted sp, and
-// NZCV, FPCR and FPSR are read into the frame as registers. All 32 SIMD registers are caller-saved in the AArch64 ABI,
-// so the interrupted code may keep anything in them: 128 bits each, not the 64 the D registers name, and the C code
-// this stub calls may use the upper halves. The return address is kept in the interrupted lr's slot once the
-// interrupted pc is known, so the exit restores lr and `ret` jumps back: a jump, not a call, as on x86-64.
+// The AArch64 version. Apple's arm64 ABI keeps a 128-byte red zone below sp (Clang puts the locals of leaf functions
+// there, and lifted functions are leaves), so the frame goes below it. The frame is a PlatIntrCtx: every general
+// register, sp, the interrupted pc, NZCV, FPCR, FPSR and all 32 SIMD registers at their full 128 bits. AArch64 has no
+// jump through memory and the interrupted code may have any register live, x30 included (a leaf keeps its return
+// address there), so the stub does not jump back itself: plat_intr_return has the OS load the whole frame.
+_Static_assert(offsetof(PlatIntrCtx, sp) == 248 && offsetof(PlatIntrCtx, pc) == 256 &&
+                   offsetof(PlatIntrCtx, nzcv) == 264 && offsetof(PlatIntrCtx, fpcr) == 272 &&
+                   offsetof(PlatIntrCtx, q) == 288 && sizeof(PlatIntrCtx) == 800,
+               "kern_ap_stub frame layout");
 __asm__(".text\n"
         ".globl _kern_ap_stub\n"
         ".p2align 4\n"
         "_kern_ap_stub:\n"
-        "    sub sp, sp, #720\n"        // 0 x0-x18,x29 (10 pairs), 160 lr/return slot, 176 NZCV,FPCR, 192 FPSR,
-        "    stp x0, x1, [sp, #0]\n"     // 208 q0-q31, 720 frame end
+        "    sub sp, sp, #928\n"       // 128 red zone + 800 PlatIntrCtx
+        "    stp x0, x1, [sp, #0]\n"
         "    stp x2, x3, [sp, #16]\n"
         "    stp x4, x5, [sp, #32]\n"
         "    stp x6, x7, [sp, #48]\n"
@@ -509,68 +513,42 @@ __asm__(".text\n"
         "    stp x12, x13, [sp, #96]\n"
         "    stp x14, x15, [sp, #112]\n"
         "    stp x16, x17, [sp, #128]\n"
-        "    stp x18, x29, [sp, #144]\n"
-        "    str x30, [sp, #160]\n"
+        "    stp x18, x19, [sp, #144]\n"
+        "    stp x20, x21, [sp, #160]\n"
+        "    stp x22, x23, [sp, #176]\n"
+        "    stp x24, x25, [sp, #192]\n"
+        "    stp x26, x27, [sp, #208]\n"
+        "    stp x28, x29, [sp, #224]\n"
+        "    str x30, [sp, #240]\n"
+        "    add x9, sp, #928\n"
+        "    str x9, [sp, #248]\n"     // the interrupted sp
         "    mrs x9, nzcv\n"
-        "    mrs x10, fpcr\n"
-        "    mrs x11, fpsr\n"
-        "    stp x9, x10, [sp, #176]\n"
-        "    str x11, [sp, #192]\n"
-        "    stp q0, q1, [sp, #208]\n"
-        "    stp q2, q3, [sp, #224]\n"
-        "    stp q4, q5, [sp, #240]\n"
-        "    stp q6, q7, [sp, #256]\n"
-        "    stp q8, q9, [sp, #272]\n"
-        "    stp q10, q11, [sp, #288]\n"
-        "    stp q12, q13, [sp, #304]\n"
-        "    stp q14, q15, [sp, #320]\n"
-        "    stp q16, q17, [sp, #336]\n"
-        "    stp q18, q19, [sp, #352]\n"
-        "    stp q20, q21, [sp, #368]\n"
-        "    stp q22, q23, [sp, #384]\n"
-        "    stp q24, q25, [sp, #400]\n"
-        "    stp q26, q27, [sp, #416]\n"
-        "    stp q28, q29, [sp, #432]\n"
-        "    stp q30, q31, [sp, #448]\n"
+        "    str x9, [sp, #264]\n"
+        "    mrs x9, fpcr\n"
+        "    mrs x10, fpsr\n"
+        "    stp x9, x10, [sp, #272]\n"
+        "    stp q0, q1, [sp, #288]\n"
+        "    stp q2, q3, [sp, #320]\n"
+        "    stp q4, q5, [sp, #352]\n"
+        "    stp q6, q7, [sp, #384]\n"
+        "    stp q8, q9, [sp, #416]\n"
+        "    stp q10, q11, [sp, #448]\n"
+        "    stp q12, q13, [sp, #480]\n"
+        "    stp q14, q15, [sp, #512]\n"
+        "    stp q16, q17, [sp, #544]\n"
+        "    stp q18, q19, [sp, #576]\n"
+        "    stp q20, q21, [sp, #608]\n"
+        "    stp q22, q23, [sp, #640]\n"
+        "    stp q24, q25, [sp, #672]\n"
+        "    stp q26, q27, [sp, #704]\n"
+        "    stp q28, q29, [sp, #736]\n"
+        "    stp q30, q31, [sp, #768]\n"
         "    bl _kern_ap_rip\n"
-        "    str x0, [sp, #168]\n"     // the return slot: where the interrupted instruction was
+        "    str x0, [sp, #256]\n"     // the interrupted pc
         "    bl _kern_ap_yield\n"
-        "    ldp q0, q1, [sp, #208]\n"
-        "    ldp q2, q3, [sp, #224]\n"
-        "    ldp q4, q5, [sp, #240]\n"
-        "    ldp q6, q7, [sp, #256]\n"
-        "    ldp q8, q9, [sp, #272]\n"
-        "    ldp q10, q11, [sp, #288]\n"
-        "    ldp q12, q13, [sp, #304]\n"
-        "    ldp q14, q15, [sp, #320]\n"
-        "    ldp q16, q17, [sp, #336]\n"
-        "    ldp q18, q19, [sp, #352]\n"
-        "    ldp q20, q21, [sp, #368]\n"
-        "    ldp q22, q23, [sp, #384]\n"
-        "    ldp q24, q25, [sp, #400]\n"
-        "    ldp q26, q27, [sp, #416]\n"
-        "    ldp q28, q29, [sp, #432]\n"
-        "    ldp q30, q31, [sp, #448]\n"
-        "    ldr x11, [sp, #192]\n"
-        "    ldp x9, x10, [sp, #176]\n"
-        "    msr fpsr, x11\n"
-        "    msr fpcr, x10\n"
-        "    msr nzcv, x9\n"
-        "    ldr x9, [sp, #168]\n"
-        "    str x9, [sp, #160]\n"     // the interrupted lr gives way to the jump target
-        "    ldp x0, x1, [sp, #0]\n"
-        "    ldp x2, x3, [sp, #16]\n"
-        "    ldp x4, x5, [sp, #32]\n"
-        "    ldp x6, x7, [sp, #48]\n"
-        "    ldp x8, x9, [sp, #64]\n"
-        "    ldp x10, x11, [sp, #80]\n"
-        "    ldp x12, x13, [sp, #96]\n"
-        "    ldp x14, x15, [sp, #112]\n"
-        "    ldp x16, x17, [sp, #128]\n"
-        "    ldp x18, x29, [sp, #144]\n"
-        "    ldr x30, [sp, #160]\n"
-        "    add sp, sp, #720\n"
-        "    ret\n");
+        "    mov x0, sp\n"
+        "    bl _plat_intr_return\n"
+        "    brk #0x1\n");
 #else
 // The System V version: rsi and rdi are volatile there too, and the interrupted code may keep data in the 128 bytes
 // below its stack pointer (the red zone), so the return slot and the saves go below that. Without a red zone in the

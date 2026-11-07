@@ -202,6 +202,48 @@ int plat_intr_resume(PlatIntr *t, uint64_t to) {
     return ok;
 }
 
+// plat_intr_return: the thread signals itself, and the handler writes the saved context over the one the signal
+// interrupted, so sigreturn loads every register as it was when the thread was stopped. The signal is delivered before
+// pthread_kill returns, on the thread's own stack below the saved context, which stays intact until the handler copied
+// it. SIGUSR2 is not used otherwise.
+#define INTR_RETURN_SIG SIGUSR2
+static __thread const PlatIntrCtx *intr_ret;
+
+static void intr_return_handler(int sig, siginfo_t *si, void *uc) {
+    (void)sig, (void)si;
+    const PlatIntrCtx *c = intr_ret;
+    if (!c) return;
+    intr_ret = NULL;
+    ucontext_t *u = uc;
+    for (int i = 0; i < 29; i++) u->uc_mcontext->__ss.__x[i] = c->x[i];
+    arm_thread_state64_set_fp(u->uc_mcontext->__ss, c->x[29]);
+    arm_thread_state64_set_lr_fptr(u->uc_mcontext->__ss, (void *)(uintptr_t)c->x[30]);
+    arm_thread_state64_set_sp(u->uc_mcontext->__ss, c->sp);
+    arm_thread_state64_set_pc_fptr(u->uc_mcontext->__ss, (void *)(uintptr_t)c->pc);
+    u->uc_mcontext->__ss.__cpsr = (u->uc_mcontext->__ss.__cpsr & 0x0fffffffu) | ((uint32_t)c->nzcv & 0xf0000000u);
+    memcpy(u->uc_mcontext->__ns.__v, c->q, sizeof u->uc_mcontext->__ns.__v);
+    u->uc_mcontext->__ns.__fpsr = (uint32_t)c->fpsr;
+    u->uc_mcontext->__ns.__fpcr = (uint32_t)c->fpcr;
+}
+
+static void intr_return_install(void) {
+    struct sigaction sa = {.sa_sigaction = intr_return_handler, .sa_flags = SA_SIGINFO};
+    sigemptyset(&sa.sa_mask);
+    sigaction(INTR_RETURN_SIG, &sa, NULL);
+}
+
+void plat_intr_return(const PlatIntrCtx *c) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, intr_return_install);
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, INTR_RETURN_SIG);
+    pthread_sigmask(SIG_UNBLOCK, &s, NULL);
+    intr_ret = c;
+    pthread_kill(pthread_self(), INTR_RETURN_SIG);
+    abort();   // not reached: the handler sent the thread back to c->pc
+}
+
 // ---- fibers: a stack switch of our own, as in linux.c. fiber_swap saves the callee-saved general and FP registers
 // and FPCR/FPSR on the current stack, stores the stack pointer in *save and loads the other one. A new fiber's stack
 // is laid out as fiber_swap leaves one, returning into fiber_entry, which calls fn(arg) (x19 and x20).

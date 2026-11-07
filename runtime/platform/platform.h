@@ -53,6 +53,17 @@ int plat_intr_stop(PlatIntr *t, uint64_t *rip, uint64_t *rsp);
 // Lets a stopped t go on: at to when to is nonzero, else where it stopped. 0 when the redirection failed (t then goes
 // on where it stopped).
 int plat_intr_resume(PlatIntr *t, uint64_t to);
+#if defined(__aarch64__)
+// AArch64 has no jump through memory, and code interrupted anywhere may have every general register live, x30 and the
+// IP registers included, so the code a thread was sent to cannot jump back by itself without losing one. It saves the
+// interrupted context here instead (kernel.c kern_ap_stub lays it out) and calls plat_intr_return on the same thread,
+// which makes the OS load all of it, pc and sp included. Does not return.
+typedef struct {
+    uint64_t x[31], sp, pc, nzcv, fpcr, fpsr;
+    __uint128_t q[32];
+} PlatIntrCtx;
+void plat_intr_return(const PlatIntrCtx *c) __attribute__((noreturn));
+#endif
 
 // Fibers: execution contexts with stacks of their own that threads switch between; a fiber may resume on another
 // thread. Each switch keeps the callee-saved registers and the floating-point control state.
