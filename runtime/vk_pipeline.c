@@ -1223,8 +1223,9 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
     static int fmz_mode = -1;   // 0 off, 1 vertex stage only, 2 every stage
     if (fmz_mode < 0) {
         const char *e = cfg_get("TOTK_FMZ");
-        fmz_mode = !e || !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "vertex") ? 1 : !strcmp(e, "all") ? 2 : 0;
-        if (e && *e && !fmz_mode && strcmp(e, "0")) rt_log("vk: DKB_FMZ=%s ignored (use vertex or all)", e);
+        // On by default for vertex stages (#75): the end-of-tutorial cutscene loses the NVIDIA device without it.
+        fmz_mode = !e ? 1 : !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "vertex") ? 1 : !strcmp(e, "all") ? 2 : 1;
+        if (e && *e && strcmp(e, "0") && strcmp(e, "vertex") && strcmp(e, "all")) rt_log("vk: DKB_FMZ=%s ignored, using vertex (use 0, vertex or all)", e);
     }
     // DKB_FMZ_SEL=<mask>:<value> (hex, bisection aid for #75): only modules whose FNV-1a 64 hash before the rewrite
     // satisfies (hash & mask) == value get the FMZ rewrite, so a run can cover a fixed half, quarter, ... of them.
