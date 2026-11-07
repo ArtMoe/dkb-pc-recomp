@@ -116,8 +116,8 @@ The toolchain is TotK Recomp's ([docs/building.md](docs/building.md)): MSYS2 UCR
 .venv\Scripts\python tools\build_game.py --version dkb100 --expected tools\data\expected-dkb100.json --exefs <exefs> --romfs build\extracted\dkb100\romfs
 ```
 
-Everything the build writes stays under `build\` and `generated\`, which git ignores. The game commits about 14 GB (13.5 to 13.7 GiB over a
-32-minute session, flat after the first 20 minutes), so 16 GB of RAM plus a large page file is the minimum for now and 32 GB is comfortable. Running and testing: [docs/dkb-testing.md](docs/dkb-testing.md).
+Everything the build writes stays under `build\` and `generated\`, which git ignores. The game commits about 14 GB (13.5 GiB at the start and
+13.75 GiB after 40 minutes, rising about 6 MB per minute; longer sessions are untested), so 16 GB of RAM plus a large page file is the minimum for now and 32 GB is comfortable. Running and testing: [docs/dkb-testing.md](docs/dkb-testing.md).
 
 ## FAQ
 
