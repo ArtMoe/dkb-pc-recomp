@@ -1388,10 +1388,23 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, p[1], 1);
     posix_spawn_file_actions_adddup2(&fa, p[1], 2);
-    setenv(env_name, env_value, 1);
+    // The child's environment is a copy with env_name set: setenv here could race getenv on other threads.
+    size_t ne = 0, nl = strlen(env_name);
+    while (environ[ne]) ne++;
+    char **envp = calloc(ne + 2, sizeof *envp);
+    char *entry = malloc(nl + strlen(env_value) + 2);
     pid_t pid;
-    int e = posix_spawn(&pid, exe, &fa, NULL, *_NSGetArgv(), environ);
-    unsetenv(env_name);
+    int e = -1;
+    if (envp && entry) {
+        sprintf(entry, "%s=%s", env_name, env_value);
+        size_t k = 0;
+        for (size_t i = 0; i < ne; i++)
+            if (strncmp(environ[i], env_name, nl) || environ[i][nl] != '=') envp[k++] = environ[i];
+        envp[k++] = entry;
+        e = posix_spawn(&pid, exe, &fa, NULL, *_NSGetArgv(), envp);
+    }
+    free(envp);
+    free(entry);
     posix_spawn_file_actions_destroy(&fa);
     close(p[1]);
     if (e) {
