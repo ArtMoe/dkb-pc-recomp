@@ -197,6 +197,13 @@ THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
+`make_release.py --game dkb` makes the Bananza folder (`DKB-Setup-<version>-windows.zip` with `--zip`) from the
+same layout, with these differences: the launcher is `DKB-Setup.exe` (its two messages are the `dkb.launcher.*` ids);
+`runtime/` holds every runtime source instead of `libtotkrt.a`, because the installer compiles the whole runtime at
+install time; `bin/` has no `hactool.exe` (Bananza reads plain ExeFS and RomFS folders); `tools/` adds
+`build_xlate.py`, `dkb_pack_romfs.py`, `dkb_shader_census.py`, `vendor/ryujinx` and `xlate` (the translator is built
+at install); the lifted tree is `dkb100` instead of `v121`/`v143`.
+
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
 - Every bundled third-party piece gets a row in `THIRD_PARTY_NOTICES.md`.
 - The release contains nothing game-derived; `make_release.py` runs `tools/check_content.py` over the folder before it

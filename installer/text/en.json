@@ -176,6 +176,8 @@
  "lang.zh-Hans": "Chinese (Simplified)",
  "lang.zh-Hant": "Chinese (Traditional)",
  "dkb.ui.title": "Bananza Setup",
+ "dkb.launcher.title": "Bananza Setup",
+ "dkb.launcher.python_missing": "The setup files are incomplete: the python folder next to DKB-Setup.exe is missing. Unpack the whole archive again and start DKB-Setup.exe from the unpacked folder.",
  "dkb.ui.intro": "Builds Donkey Kong Bananza from your own base 1.0.0 ExeFS and RomFS folders. Updates are not supported yet.",
  "dkb.ui.exefs": "ExeFS folder",
  "dkb.ui.romfs": "RomFS folder",

@@ -449,7 +449,7 @@ def launcher_header(path):
     for lang in ('en', 'ru'):
         texts = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
         for key in ('title', 'python_missing'):
-            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts["launcher." + key])}')
+            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts[("dkb." if GAME == "dkb" else "") + "launcher." + key])}')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('\n'.join(lines) + '\n', encoding='ascii')
 

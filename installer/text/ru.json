@@ -176,6 +176,8 @@
  "lang.zh-Hans": "Китайский (упрощённый)",
  "lang.zh-Hant": "Китайский (традиционный)",
  "dkb.ui.title": "Установка Bananza",
+ "dkb.launcher.title": "Установка Bananza",
+ "dkb.launcher.python_missing": "Файлы установки неполные: рядом с DKB-Setup.exe нет папки python. Распакуйте архив целиком заново и запустите DKB-Setup.exe из распакованной папки.",
  "dkb.ui.intro": "Собирает Donkey Kong Bananza из ваших папок ExeFS и RomFS базовой версии 1.0.0. Обновления пока не поддерживаются.",
  "dkb.ui.exefs": "Папка ExeFS",
  "dkb.ui.romfs": "Папка RomFS",
