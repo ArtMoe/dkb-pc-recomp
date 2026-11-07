@@ -354,10 +354,8 @@ static int create_device(void) {
     else if (!h->geometryShader && !portable) miss = "geometryShader";
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
-    if (!h->geometryShader) {
-        g_vk.no_geometry = 1;
+    if (!h->geometryShader)   // vk_pipeline.c skips the pipelines that need it (P.f_geometry)
         rt_log("vk: %s has no geometry stage (portability subset): draws that need one are skipped", g_vk.props.deviceName);
-    }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     if (g_vk.has_address_binding_report && !c->abr.reportAddressBinding) g_vk.has_address_binding_report = 0;
     if (g_vk.has_pipeline_exec_info && !c->pei.pipelineExecutableInfo) g_vk.has_pipeline_exec_info = 0;
