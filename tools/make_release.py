@@ -3,6 +3,10 @@
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/TotK-Setup [--zip build/release/TotK-Setup.zip]
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/TotK-Setup --prove
 
+For Donkey Kong Bananza add --game dkb (needs generated/dkb100 and build/xlate): --out defaults to build/release/DKB-Setup and a
+bare --zip writes DKB-Setup-<version>-windows.zip beside it. The folder carries every runtime source instead of
+libtotkrt.a, has no hactool, and --prove does not apply. The TotK description below is otherwise the same.
+
 Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
 
