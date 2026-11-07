@@ -583,9 +583,17 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         r = (RtMemoryInfo){.base = L.alias.base + s * PAGE, .size = (e - s) * PAGE, .state = v ? ST_NORMAL : ST_FREE,
                            .perm = v ? PERM_RW : PERM_NONE};
     } else if (a < low) {
-        r.base = 0;
-        r.size = low;
-        r.state = ST_FREE;
+        // Below the block. With none of our regions under a (always so on Windows, where the block is the lowest) this
+        // is the free space at the bottom, up to the first region above a. On macOS the block lies above the modules,
+        // the kernel and host-function areas and maybe the alias region; a gap between those is the host's, reported
+        // taken like any other gap below 2^39 (taken_gap).
+        taken_gap(a, &r.base, &r.size);
+        if (r.base == 0) {
+            r.state = ST_FREE;
+        } else {
+            r.state = ST_CODE;
+            r.perm = PERM_RX;
+        }
     } else if (a < low + LOW_SIZE) {
         uint64_t heap = L.heap.base;
         if (a >= heap && a < heap + heap_size) {
