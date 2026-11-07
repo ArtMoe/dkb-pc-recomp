@@ -403,7 +403,9 @@ def build_sources(out):
     for f in (DKB_TOOLS_FILES if GAME == 'dkb' else []):
         shutil.copy2(ROOT / 'tools' / f, out / 'tools' / f)
     for d in TOOLS_DIRS + (DKB_TOOLS_DIRS if GAME == 'dkb' else []):
-        copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
+        # The translator identity (build_xlate.py identity) hashes every file under vendor/ryujinx, README.md included.
+        copy_tree(ROOT / 'tools' / d, out / 'tools' / d,
+                  lambda r, d=d: '__pycache__' in r or (r.endswith('.md') and d != 'vendor/ryujinx'))
     (out / 'data').mkdir(exist_ok=True)
     if GAME == 'totk':   # the TotK installer reads the shared shader list; the Bananza one does not
         text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
