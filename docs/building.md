@@ -201,8 +201,8 @@ geometry stage, so draws that need one are skipped (see below).
 
 Requirements:
 
-- macOS 14 or later on Apple Silicon. The locks use `os_sync_wait_on_address`, and the sections and the window thread
-  arrangement assume arm64.
+- macOS 14.4 or later on Apple Silicon. The locks use `os_sync_wait_on_address` (new in 14.4), and the sections and
+  the window thread arrangement assume arm64.
 - A Vulkan 1.3 driver: MoltenVK 1.4 or later (`VK_KHR_portability_enumeration` and `VK_KHR_portability_subset`).
 - Packages:
 
