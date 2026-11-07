@@ -2,7 +2,7 @@
 
 Bananza 1.0.0 can adjust game timing to measured frame duration. This is
 experimental and off by default. Enable the existing **Game speed follows the
-clock** option (`TOTK_REALTIME=1`, or `realtime = 1` in `totk.ini`) and restart
+clock** option (`DKB_REALTIME=1`, or `realtime = 1` in `dkb.ini`; `TOTK_REALTIME` is still accepted) and restart
 once. With it enabled, the existing frame-rate selector, including Monitor rate,
 applies cap changes without restarting. The default cap remains 60 FPS. TotK
 retains its existing on-by-default timing setting.

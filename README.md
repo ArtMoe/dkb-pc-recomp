@@ -138,7 +138,13 @@ Recomp keep their MIT terms.
 Recomp, and checked by running the game and the differential tests. AI-assisted pull requests are welcome; you are
 responsible for having read and run them.
 
-## Credits
+## Credits and origin
+
+DKB Recomp is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) (*Tears of the Kingdom*, Switch 1)
+by valentderah and its contributors (MIT, kept in [LICENSE-MIT](LICENSE-MIT)). It uses Eglantine's Ampere shader
+lowering (GPL-3.0-or-later, `runtime/third_party/eglantine/`) and Ryujinx's shader translator (MIT, vendored with
+MacNativeGames' patches), plus the other projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The whole is
+under [LICENSE](LICENSE).
 
 - [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by valentderah, the base of everything here, and the
   projects it builds on: [LAS Recomp](https://github.com/peiikai/LASRecomp),
