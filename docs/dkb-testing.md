@@ -7,7 +7,8 @@ executable, not the generated code, not the shader cache.
 ## What you need
 
 - Windows 10 or 11 on an x86-64 CPU with AVX2.
-- 16 GB of RAM. The game uses about 13 GB, so close other large programs first.
+- 16 GB of RAM plus a large page file (32 GB is comfortable). The game commits about 14 GB (13.5 to 13.7 GiB in a 32-minute session
+  in the tutorial and first mine, peak 15.3 GiB), so close other large programs first.
 - A GPU with Vulkan 1.3 and a current driver.
 - About 15 GB free for the build (the packed RomFS is about 9 GB), besides the space your dump takes.
 - *Donkey Kong Bananza* base version 1.0.0, dumped from your own Switch 2: the ExeFS (`main`, `sdk`, `main.npdm`) and
