@@ -7,7 +7,7 @@ index.json names each stage the way the runtime does (runtime/gfx_shader.c, gfx_
 section and the code), which is the DKB_SHADER_DUMP file name, so the pack can be compared with a dump of what the game
 loaded.
 
-Writes build/<version>/shaders-nvn2/seed-nvn2.bin, read by `dkb.exe --prepare-shaders`:
+Writes build/<version>/shaders-nvn2/seed-nvn2.bin, read by `dkb.exe --translate-shaders`:
 
     "DKBN2SD1", u32 count, then per stage: u32 stage (GFX_STAGE_*: 0 vertex, 4 pixel, 5 compute), u32 control size,
     u32 code size, the control section and the code, each padded to 4 bytes.

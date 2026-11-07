@@ -88,7 +88,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
 
     def run_install(self, fail=None):
         original = b.run_tool
-        def tool(ctx, step, command, env=None, cwd=None):
+        def tool(ctx, step, command, env=None, cwd=None, name=None):
             self.calls.append((step, list(map(str, command))))
             if fail:
                 fail(ctx, step, command)
@@ -98,7 +98,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
                 return
             if step == 'dkb_verify':
                 return
-            return original(ctx, step, command, env, cwd)
+            return original(ctx, step, command, env, cwd, name)
         output = io.StringIO()
         with patch.object(b.layouts, 'find', return_value=self.layout), patch.object(b.Check, 'host'), \
                 patch.object(b, 'run_tool', side_effect=tool), contextlib.redirect_stdout(output):
@@ -168,6 +168,14 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.calls.clear()
         self.assertEqual(self.run_install()[0], 0)
         self.assertEqual(self.calls, [], 'a retry must not run the crashing library build again')
+
+    def test_library_warm_path_rejection_fails_the_step(self):
+        def reject(ctx, step, command):
+            if str(command[-1]) == '--warm-shaders':
+                raise b.InstallError('dkb.path_link', path='warm.log')
+        code, events = self.run_install(reject)
+        self.assertEqual(code, 1)
+        self.assertNotIn('dkb_shaders', b.statefile.load(self.dest, b.STATE)['steps'])
 
     def test_translation_failure_fails_the_step(self):
         def fail(ctx, step, command):

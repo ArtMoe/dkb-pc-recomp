@@ -337,9 +337,9 @@ def lock_temp(temp):
     return stream
 
 
-def run_tool(ctx, step, command, env=None, cwd=None):
+def run_tool(ctx, step, command, env=None, cwd=None, name=None):
     plain_outputs(ctx)
-    log = ctx.temp / 'logs' / f'{step}.log'
+    log = ctx.temp / 'logs' / f'{name or step}.log'
     ensure_plain(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     ctx.reporter.progress(step, 'dkb_run', force=True)
@@ -574,7 +574,7 @@ class Compile(Step):
 class Shaders(Step):
     """Translate every shader stage in the game's files into the shader cache, so no draw waits for a first translation.
 
-    tools/dkb_shader_census.py lists the stages (RomFS) into seed-nvn2.bin and dkb.exe --prepare-shaders lowers and
+    tools/dkb_shader_census.py lists the stages (RomFS) into seed-nvn2.bin and dkb.exe --translate-shaders lowers and
     translates them. The cache belongs to the player and survives later steps; the 187 MiB pack is removed again."""
     id = 'dkb_shaders'
 
@@ -588,7 +588,7 @@ class Shaders(Step):
     def run(self, ctx):
         pack = ctx.dest / 'seed-nvn2.bin'
         run_tool(ctx, self.id, [ctx.layout.python, ctx.layout.tools / 'dkb_shader_census.py', '--version', GAME,
-                                '--romfs', ctx.dest / 'romfs', '--out', ctx.dest])
+                                '--romfs', ctx.dest / 'romfs', '--out', ctx.dest], name=f'{self.id}-census')
         try:
             run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--translate-shaders'], cwd=ctx.dest)
         finally:
@@ -597,12 +597,15 @@ class Shaders(Step):
         # NVIDIA 621.01) must not fail the step, or every retry would crash again.
         libraries = True
         try:
-            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--warm-shaders'], cwd=ctx.dest)
+            run_tool(ctx, self.id, [ctx.dest / ('dkb' + EXE), '--warm-shaders'], cwd=ctx.dest,
+                     name=f'{self.id}-warm')
         except InstallError as error:
             if error.id != 'dkb.tool_failed':   # a path-safety rejection still stops the install
                 raise
+            # On Windows Ctrl+C the child can exit 0xC000013A before the parent handler raises; that is recorded as
+            # libraries:false here, which is harmless.
             libraries = False
-            ctx.reporter.warning('warn.dkb_libraries_failed', detail=f"exit code {error.params.get('code')}",
+            ctx.reporter.warning('warn.dkb_libraries_failed', code=error.params.get('code'),
                                  log=str(error.params.get('log')))
         return {'prepared': True, 'libraries': libraries}
 
