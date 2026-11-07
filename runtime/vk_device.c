@@ -55,9 +55,9 @@ static void mesa_cache_beside_exe(void) {
     plat_setenv("MESA_SHADER_CACHE_DIR", dir);
 }
 
-// An instance extension the loader offers. Enabling one it does not offer fails vkCreateInstance outright, so the two
-// portability extensions below are checked first: they exist on Windows and Linux loaders too, without a driver that
-// uses them.
+#ifdef __APPLE__
+// An instance extension the loader offers. Enabling one it does not offer fails vkCreateInstance outright, so the
+// portability enumeration extension below is checked first (macOS only, create_instance).
 static int instance_ext_present(const char *name) {
     uint32_t n = 0;
     vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
@@ -67,6 +67,7 @@ static int instance_ext_present(const char *name) {
     free(e);
     return found;
 }
+#endif
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
@@ -94,12 +95,16 @@ static int create_instance(void) {
     if (utils) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     g_vk.debug_utils = utils;
     // MoltenVK is a portability implementation: the loader only lists it for an instance that asks for the portability
-    // enumeration extension, and the logical device then enables VK_KHR_portability_subset (create_device).
+    // enumeration extension, and the logical device then enables VK_KHR_portability_subset (create_device). Only on
+    // macOS: the Khronos loader offers the extension on Windows and Linux too, and asking there would let a portability
+    // device in, without the geometryShader requirement, where none was accepted before.
     VkInstanceCreateFlags flags = 0;
+#ifdef __APPLE__
     if (n_ext < 12 && instance_ext_present(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
         flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
     }
+#endif
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
