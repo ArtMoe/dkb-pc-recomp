@@ -1226,8 +1226,25 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
         fmz_mode = !e || !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "vertex") ? 1 : !strcmp(e, "all") ? 2 : 0;
         if (e && *e && !fmz_mode && strcmp(e, "0")) rt_log("vk: DKB_FMZ=%s ignored (use vertex or all)", e);
     }
+    // DKB_FMZ_SEL=<mask>:<value> (hex, bisection aid for #75): only modules whose FNV-1a 64 hash before the rewrite
+    // satisfies (hash & mask) == value get the FMZ rewrite, so a run can cover a fixed half, quarter, ... of them.
+    static uint64_t fmz_sel_mask, fmz_sel_val;
+    static int fmz_sel_read;
+    if (!fmz_sel_read) {
+        fmz_sel_read = 1;
+        const char *s = cfg_get("TOTK_FMZ_SEL");
+        char *end;
+        if (s && *s) {
+            fmz_sel_mask = strtoull(s, &end, 16);
+            if (*end == ':') fmz_sel_val = strtoull(end + 1, NULL, 16) & fmz_sel_mask;
+            else fmz_sel_mask = 0;
+        }
+    }
     uint32_t *fmz = NULL;
-    if (fmz_mode) {
+    uint64_t pre_h = 0xcbf29ce484222325ull;
+    if (fmz_mode && fmz_sel_mask)
+        for (uint64_t i = 0; i < words * 4; i++) pre_h = (pre_h ^ ((const uint8_t *)w)[i]) * 0x100000001b3ull;
+    if (fmz_mode && (!fmz_sel_mask || (pre_h & fmz_sel_mask) == fmz_sel_val)) {
         uint64_t fmz_n = 0;
         unsigned nm = 0, nf = 0;
         fmz = spirv_fmz(w, words, fmz_mode == 1, &fmz_n, &nm, &nf);
