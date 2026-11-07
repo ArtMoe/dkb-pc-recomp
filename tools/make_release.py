@@ -111,7 +111,7 @@ RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 # --full-build), so the folder carries every runtime source and the translator's inputs instead of libtotkrt.a.
 GAME = 'totk'
 GAMES = {'totk': dict(lifted=('v121', 'v143'), name='TotK-Setup'), 'dkb': dict(lifted=('dkb100',), name='DKB-Setup')}
-DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py']
+DKB_TOOLS_FILES = ['build_xlate.py', 'dkb_pack_romfs.py', 'dkb_shader_census.py']
 DKB_TOOLS_DIRS = ['vendor/ryujinx', 'xlate']   # translator identity hashes these
 
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader']
@@ -403,7 +403,9 @@ def build_sources(out):
     for f in (DKB_TOOLS_FILES if GAME == 'dkb' else []):
         shutil.copy2(ROOT / 'tools' / f, out / 'tools' / f)
     for d in TOOLS_DIRS + (DKB_TOOLS_DIRS if GAME == 'dkb' else []):
-        copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
+        # The translator identity (build_xlate.py identity) hashes every file under vendor/ryujinx, README.md included.
+        copy_tree(ROOT / 'tools' / d, out / 'tools' / d,
+                  lambda r, d=d: '__pycache__' in r or (r.endswith('.md') and d != 'vendor/ryujinx'))
     (out / 'data').mkdir(exist_ok=True)
     if GAME == 'totk':   # the TotK installer reads the shared shader list; the Bananza one does not
         text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
