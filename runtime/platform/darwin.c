@@ -916,17 +916,17 @@ int plat_mem_decommit(uint64_t addr, uint64_t n) {
     int ok = 0;
     if (pstate && addr < PS_LIMIT && n <= PS_LIMIT - addr) {
         uint64_t end = addr + n;
-        // Whole host pages inside the range go back to the system; a fresh fixed allocation at the same place reads
-        // zero. The partly covered host pages at the ends keep the pages outside the range, so they are zeroed in
-        // place (mach_vm_deallocate works on whole host pages only and would drop those).
+        // Whole host pages inside the range go back to the system: a fixed allocation over them that replaces the
+        // mapping in one call (VM_FLAGS_OVERWRITE) reads zero, and leaves no moment in which the range is unmapped and
+        // another thread's mapping could land there. The partly covered host pages at the ends keep the pages outside
+        // the range, so they are zeroed in place.
         uint64_t h0 = (addr + HPG - 1) & ~(HPG - 1), h1 = end & ~(HPG - 1);
         ok = 1;
         if (h1 > h0) {
-            if (mach_vm_deallocate(mach_task_self(), h0, h1 - h0)) ok = 0;
-            else {
-                mach_vm_address_t a = h0;
-                if (mach_vm_allocate(mach_task_self(), &a, h1 - h0, VM_FLAGS_FIXED) != KERN_SUCCESS || a != h0) ok = 0;
-            }
+            mach_vm_address_t a = h0;
+            if (mach_vm_allocate(mach_task_self(), &a, h1 - h0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) != KERN_SUCCESS ||
+                a != h0)
+                ok = 0;
         }
         if (ok && (addr < h0 || end > h1)) {
             uint64_t e0 = addr & ~(HPG - 1), e1 = (end + HPG - 1) & ~(HPG - 1);
