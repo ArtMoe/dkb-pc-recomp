@@ -247,13 +247,37 @@ FIXED(BeginQuery, (VkCommandBuffer cb, VkQueryPool p, uint32_t q, VkQueryControl
 #define PACK_BindIndexBuffer *a = (A_BindIndexBuffer){b, o, t}
 FIXED(BindIndexBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkIndexType t), (cb, b, o, t), VkBuffer b;
       VkDeviceSize o; VkIndexType t)
-#define PACK_BindPipeline *a = (A_BindPipeline){bp, p}
-FIXED(BindPipeline, (VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p), (cb, bp, p), VkPipelineBindPoint bp;
-      VkPipeline p)
-#define PACK_Dispatch *a = (A_Dispatch){x, y, z}
-FIXED(Dispatch, (VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z), (cb, x, y, z), uint32_t x, y, z)
-#define PACK_DispatchIndirect *a = (A_DispatchIndirect){b, o}
-FIXED(DispatchIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o), (cb, b, o), VkBuffer b; VkDeviceSize o)
+// DKB_GPU_CHECKPOINTS=1: a checkpoint in front of a dispatch, copy, blit or clear (vk_crumbs.c vk_checkpoint_tag), so a
+// lost device names that command and not only the pipeline bound before it. The dispatch checkpoints carry the compute
+// pipeline last bound here, which is why the binds are written by hand. Nothing happens with the checkpoints off.
+static void mark(VkCommandBuffer cb, const char *kind) {
+    if (vk_checkpoints_on()) rec_checkpoint(cb, vk_checkpoint_tag(kind));
+}
+
+typedef struct { VkPipelineBindPoint bp; VkPipeline p; } A_BindPipeline;
+void rc_vkCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
+    if (bp == VK_PIPELINE_BIND_POINT_COMPUTE && vk_checkpoints_on()) vk_checkpoint_compute(p);
+    if (!OWNED(cb)) { vkCmdBindPipeline(cb, bp, p); return; }
+    A_BindPipeline *a = put(R_BindPipeline, sizeof *a);
+    *a = (A_BindPipeline){bp, p};
+    pub();
+}
+typedef struct { uint32_t x, y, z; } A_Dispatch;
+void rc_vkCmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
+    mark(cb, "dispatch");
+    if (!OWNED(cb)) { vkCmdDispatch(cb, x, y, z); return; }
+    A_Dispatch *a = put(R_Dispatch, sizeof *a);
+    *a = (A_Dispatch){x, y, z};
+    pub();
+}
+typedef struct { VkBuffer b; VkDeviceSize o; } A_DispatchIndirect;
+void rc_vkCmdDispatchIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o) {
+    mark(cb, "dispatch indirect");
+    if (!OWNED(cb)) { vkCmdDispatchIndirect(cb, b, o); return; }
+    A_DispatchIndirect *a = put(R_DispatchIndirect, sizeof *a);
+    *a = (A_DispatchIndirect){b, o};
+    pub();
+}
 #define PACK_Draw *a = (A_Draw){n, i, f, fi}
 FIXED(Draw, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, uint32_t fi), (cb, n, i, f, fi), uint32_t n, i, f, fi)
 #define PACK_DrawIndexed *a = (A_DrawIndexed){n, i, f, v, fi}
@@ -368,6 +392,7 @@ void rc_vkCmdBindVertexBuffers2(VkCommandBuffer cb, uint32_t first, uint32_t n, 
 typedef struct { VkImage s; VkImageLayout sl; VkImage d; VkImageLayout dl; uint32_t n; const void *r; VkFilter f; } A_Img;
 #define IMG_CMD(name, rtype, params, call, ...)                                                                         \
     void rc_vkCmd##name params {                                                                                       \
+        mark(cb, #name);                                                                                                \
         if (!OWNED(cb)) { vkCmd##name call; return; }                                                                  \
         A_Img *a = put(R_##name, sizeof *a + sizeof(rtype) * n);                                                       \
         uint8_t *at = (uint8_t *)(a + 1);                                                                              \
@@ -385,6 +410,7 @@ IMG_CMD(ResolveImage, VkImageResolve, (VkCommandBuffer cb, VkImage s, VkImageLay
 typedef struct { uint64_t s, d; VkImageLayout l; uint32_t n; const void *r; } A_Xfer;   // buffer or image handles
 #define XFER_CMD(name, rtype, params, call, S, D, L)                                                                    \
     void rc_vkCmd##name params {                                                                                       \
+        mark(cb, #name);                                                                                                \
         if (!OWNED(cb)) { vkCmd##name call; return; }                                                                  \
         A_Xfer *a = put(R_##name, sizeof *a + sizeof(rtype) * n);                                                      \
         uint8_t *at = (uint8_t *)(a + 1);                                                                              \
@@ -413,6 +439,7 @@ typedef struct { VkImage i; VkImageLayout l; union { VkClearColorValue c; VkClea
                  const VkImageSubresourceRange *r; } A_ClearImage;
 void rc_vkCmdClearColorImage(VkCommandBuffer cb, VkImage i, VkImageLayout l, const VkClearColorValue *c, uint32_t n,
                              const VkImageSubresourceRange *r) {
+    mark(cb, "ClearColorImage");
     if (!OWNED(cb)) { vkCmdClearColorImage(cb, i, l, c, n, r); return; }
     A_ClearImage *a = put(R_ClearColorImage, sizeof *a + sizeof *r * n);
     uint8_t *at = (uint8_t *)(a + 1);

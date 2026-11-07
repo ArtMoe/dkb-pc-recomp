@@ -64,7 +64,21 @@ static int create_instance(void) {
         rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
-    if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    // The checkpoints also want debug utils, for the device address binding messenger (vk_crumbs.c).
+    int utils = validate;
+    const char *ck = cfg_get("TOTK_GPU_CHECKPOINTS");
+    if (!utils && ck && !strcmp(ck, "1")) {
+        uint32_t ni = 0;
+        vkEnumerateInstanceExtensionProperties(NULL, &ni, NULL);
+        VkExtensionProperties *ip = calloc(ni ? ni : 1, sizeof *ip);
+        if (ip) {
+            vkEnumerateInstanceExtensionProperties(NULL, &ni, ip);
+            utils = has_ext(ip, ni, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            free(ip);
+        } else utils = 0;
+    }
+    if (utils) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    g_vk.debug_utils = utils;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -202,6 +216,7 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
 } FeatureChain;
 
 static int create_device(void) {
@@ -255,6 +270,12 @@ static int create_device(void) {
         if (e && !strcmp(e, "1") && has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
             g_vk.has_nv_checkpoints = 1;
             ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+            // Which VAs the driver maps and unmaps, to name the memory a fault address falls in (vk_crumbs.c).
+            if (g_vk.debug_utils && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME)) {
+                g_vk.has_address_binding_report = 1;
+                ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
+                CHAIN(abr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT);
+            }
         }
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
@@ -293,6 +314,7 @@ static int create_device(void) {
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
+    if (g_vk.has_address_binding_report && !c->abr.reportAddressBinding) g_vk.has_address_binding_report = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
@@ -451,8 +473,11 @@ void vk_device_fault_report(VkResult r) {
                n.addressInfoCount, n.vendorInfoCount, (unsigned long long)binary);
         // The faulting access lies in the precision-aligned range around the reported address.
         for (uint32_t i = 0; i < n.addressInfoCount; i++)
+        {
             rt_log("vk: device fault address %u: %s at %#llx, precision %#llx", i, fault_address_type(ai[i].addressType),
                    (unsigned long long)ai[i].reportedAddress, (unsigned long long)ai[i].addressPrecision);
+            vk_crumbs_report_address(ai[i].reportedAddress);
+        }
         for (uint32_t i = 0; i < n.vendorInfoCount; i++)
             rt_log("vk: device fault vendor info %u: \"%s\" code %#llx data %#llx", i, vi[i].description,
                    (unsigned long long)vi[i].vendorFaultCode, (unsigned long long)vi[i].vendorFaultData);

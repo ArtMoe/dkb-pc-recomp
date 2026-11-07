@@ -29,11 +29,99 @@ static PFN_vkGetQueueCheckpointData2NV get_cp2;
 enum { CP_SLOTS = 8192, CP_PROBES = 64 };   // ponytail: open addressing, a full table drops new pipelines; enlarge if the report shows "unknown"
 static struct { VkPipeline pipe; uint64_t stage[3]; } cp_reg[CP_SLOTS];   // vertex, geometry, fragment (or compute, 0, 0)
 static PlatMutex cp_lock = PLAT_MUTEX_INIT;
+static volatile uint32_t cp_tag_n;   // next tag slot, see vk_checkpoint_tag
 
 // High bits of a Fibonacci multiply (pointers have constant low bits), as find_stage in vk_exec_draw.c.
 static uint32_t cp_slot(const void *p) { return (uint32_t)(((uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull) >> 51); }
 
+// Device address bindings (VK_EXT_device_address_binding_report, with the checkpoints on): the driver reports every
+// range of GPU virtual addresses it binds or unbinds to a debug utils messenger. The newest AB_RING events are kept so
+// that the report can name what a faulting address belonged to. Sequence numbers count every event, so a wrapped ring
+// shows how many are gone.
+enum { AB_RING = 4096 };
+typedef struct { uint64_t seq, base, size, handle; uint32_t unbind, flags, type; } AbEvent;
+static AbEvent ab_ring[AB_RING];
+static uint64_t ab_n;
+static VkDebugUtilsMessengerEXT ab_messenger;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL ab_callback(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
+                                                  VkDebugUtilsMessageTypeFlagsEXT type,
+                                                  const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
+    (void)sev, (void)type, (void)user;
+    for (const VkBaseInStructure *s = d->pNext; s; s = s->pNext) {
+        if (s->sType != VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT) continue;
+        const VkDeviceAddressBindingCallbackDataEXT *b = (const void *)s;
+        uint64_t n = __atomic_fetch_add(&ab_n, 1, __ATOMIC_RELAXED);
+        AbEvent *e = &ab_ring[n % AB_RING];
+        // Seqlock: seq 0 while the slot is rewritten, n + 1 once complete; a reader skips a slot whose seq changed.
+        __atomic_store_n(&e->seq, 0, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        e->base = b->baseAddress, e->size = b->size, e->unbind = b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT;
+        e->flags = b->flags;
+        e->type = d->objectCount ? (uint32_t)d->pObjects[0].objectType : 0;
+        e->handle = d->objectCount ? d->pObjects[0].objectHandle : 0;
+        __atomic_store_n(&e->seq, n + 1, __ATOMIC_RELEASE);   // 0 also marks a slot never written
+    }
+    return VK_FALSE;
+}
+
+static const char *ab_object(uint32_t t) {
+    return t == VK_OBJECT_TYPE_DEVICE_MEMORY ? "memory" : t == VK_OBJECT_TYPE_BUFFER ? "buffer" : t == VK_OBJECT_TYPE_IMAGE ? "image" : "object";
+}
+
+static void ab_print(const char *why, const AbEvent *e) {
+    rt_log("vk: address binding #%llu %s: %s %#llx..%#llx (%llu bytes) %s %#llx%s", (unsigned long long)e->seq, why,
+           e->unbind ? "unbind" : "bind", (unsigned long long)e->base, (unsigned long long)(e->base + e->size),
+           (unsigned long long)e->size, ab_object(e->type), (unsigned long long)e->handle,
+           e->flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT ? " (driver internal)" : "");
+}
+
+void vk_crumbs_report_address(uint64_t a) {
+    if (!ab_messenger) return;
+    uint64_t total = __atomic_load_n(&ab_n, __ATOMIC_ACQUIRE);
+    uint64_t first = total > AB_RING ? total - AB_RING : 0;
+    uint32_t shown = 0;
+    const AbEvent *near = NULL;
+    rt_log("vk: address %#llx: %llu binding events seen, the newest %llu kept", (unsigned long long)a,
+           (unsigned long long)total, (unsigned long long)(total - first));
+    static AbEvent keep;   // copy of the nearest candidate, so later rewrites of its slot do not matter
+    for (uint64_t s = first; s < total; s++) {   // oldest first, so an unbind after a bind reads in order
+        const AbEvent *slot = &ab_ring[s % AB_RING];
+        if (__atomic_load_n(&slot->seq, __ATOMIC_ACQUIRE) != s + 1) continue;
+        AbEvent copy = *slot;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&slot->seq, __ATOMIC_RELAXED) != s + 1) continue;   // rewritten while copying
+        const AbEvent *e = &copy;
+        if (a >= e->base && a - e->base < e->size) {
+            if (shown++ < 16) ab_print("contains the address", e);
+        } else if (!e->unbind && e->base + e->size <= a && a - (e->base + e->size) < (1u << 20) &&
+                   (!near || e->base + e->size >= near->base + near->size)) {
+            keep = copy, near = &keep;
+        }
+    }
+    if (!shown && near) ab_print("nearest bind below the address (within 1 MiB)", near);
+    else if (!shown)
+        rt_log("vk: address %#llx: no binding contains it or ends within 1 MiB below it%s", (unsigned long long)a,
+               total > AB_RING ? " (ring wrapped: older bindings are gone)" : "");
+    // ponytail: the nearest-below search looks at binds only and ignores later unbinds of them; read the sequence numbers.
+}
+
 void vk_crumbs_init(VkCtx *c) {
+    if (c->has_address_binding_report) {
+        PFN_vkCreateDebugUtilsMessengerEXT f =
+            (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(c->instance, "vkCreateDebugUtilsMessengerEXT");
+        VkDebugUtilsMessengerCreateInfoEXT mi = {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+            .pfnUserCallback = ab_callback};
+        if (f && f(c->instance, &mi, NULL, &ab_messenger) == VK_SUCCESS)
+            rt_log("vk: device address bindings recorded (VK_EXT_device_address_binding_report)");
+        else rt_log("vk: device address binding report unavailable");
+    } else if (c->has_nv_checkpoints) {
+        rt_log("vk: device address binding report not available (VK_EXT_device_address_binding_report): fault addresses stay unmapped");
+    }
     if (c->has_nv_checkpoints) {
         set_cp = (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(c->device, "vkCmdSetCheckpointNV");
         get_cp = (PFN_vkGetQueueCheckpointDataNV)vkGetDeviceProcAddr(c->device, "vkGetQueueCheckpointDataNV");
@@ -61,6 +149,15 @@ void vk_crumbs_init(VkCtx *c) {
 
 void vk_crumbs_release(void) {
     VkCtx *c = vk_ctx();
+    if (ab_messenger && c) {
+        PFN_vkDestroyDebugUtilsMessengerEXT f =
+            (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(c->instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (f) f(c->instance, ab_messenger, NULL);
+    }
+    ab_messenger = VK_NULL_HANDLE;
+    ab_n = 0;
+    memset(ab_ring, 0, sizeof ab_ring);
+    cp_tag_n = 0;
     if (buf && c) vmaDestroyBuffer(c->vma, buf, alloc);
     buf = VK_NULL_HANDLE, alloc = NULL, words = NULL, write_marker = NULL;
     set_cp = NULL, get_cp = NULL, get_cp2 = NULL;
@@ -85,7 +182,42 @@ void vk_checkpoint_note(VkPipeline p, uint64_t a, uint64_t b, uint64_t c) {
     plat_mutex_unlock(&cp_lock);
 }
 
+// Non-pipeline checkpoints (dispatch, copies, blits, clears; vk_rec.c): the marker points into this ring and names the
+// command, plus the compute pipeline last bound on the recording thread for a dispatch. The ring wraps: a checkpoint
+// older than CP_TAGS tags would read a newer tag, far more than the frames in flight hold.
+enum { CP_TAGS = 1 << 16 };
+static struct { const char *kind; VkPipeline compute; } cp_tags[CP_TAGS];
+
+static _Thread_local VkPipeline cp_compute;
+
+// The last-bound pipeline is per recording thread, not per command buffer, so a dispatch may carry the pipeline another
+// buffer bound last on that thread (diagnostic only).
+void vk_checkpoint_compute(VkPipeline p) { cp_compute = p; }
+
+const void *vk_checkpoint_tag(const char *kind) {
+    if (!set_cp) return NULL;
+    uint32_t i = __atomic_fetch_add(&cp_tag_n, 1, __ATOMIC_RELAXED) % CP_TAGS;
+    cp_tags[i].kind = kind;
+    cp_tags[i].compute = !strncmp(kind, "dispatch", 8) ? cp_compute : VK_NULL_HANDLE;
+    return &cp_tags[i];
+}
+
+static void pipeline_name(const void *m, char *o, size_t size);
+
 static void checkpoint_name(const void *m, char *o, size_t size) {
+    if ((const char *)m >= (const char *)cp_tags && (const char *)m < (const char *)(cp_tags + CP_TAGS)) {
+        int n = snprintf(o, size, "%s", ((const typeof(cp_tags[0]) *)m)->kind);
+        if (((const typeof(cp_tags[0]) *)m)->compute && n > 0 && (size_t)n < size) {
+            snprintf(o + n, size - (size_t)n, ", last bound compute ");
+            n = (int)strlen(o);
+            pipeline_name(((const typeof(cp_tags[0]) *)m)->compute, o + n, size - (size_t)n);
+        }
+        return;
+    }
+    pipeline_name(m, o, size);
+}
+
+static void pipeline_name(const void *m, char *o, size_t size) {
     snprintf(o, size, "marker %p, pipeline not registered", m);
     plat_mutex_lock(&cp_lock);
     uint32_t i = cp_slot(m);

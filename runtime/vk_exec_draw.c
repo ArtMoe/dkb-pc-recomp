@@ -52,7 +52,7 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
     c0_push = ex->push[1];
 }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_RESET, W_GEOMETRY, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_FAULT_SKIP, W_FAULT_SKIP2, W_SKIP_VS, W_SKIP_FS, W_RESET, W_GEOMETRY, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -2325,6 +2325,42 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     return 1;
 }
 
+// DKB_SKIP_VS / DKB_SKIP_FS (debug only, for bisecting the device loss of #75): comma-separated 16-digit hex NVN 2
+// stage origins. A draw whose vertex (fragment) stage is listed in the matching variable is skipped, so a run that
+// stops faulting names the culprit shader. Parsed once; unset costs one flag test per draw.
+typedef struct { int n; uint64_t list[16]; } SkipList;
+static int skip_listed(const VkExec *ex, int stage, SkipList *sl, const char *var, int warn, const char *msg) {
+    if (sl->n < 0) {
+        sl->n = 0;
+        const char *e = cfg_get(var);
+        while (e && *e && sl->n < 16) {
+            char *end;
+            uint64_t v = strtoull(e, &end, 16);
+            if (end == e) break;
+            sl->list[sl->n++] = v;
+            e = *end == ',' ? end + 1 : end;
+        }
+    }
+    if (!sl->n) return 0;
+    const uint8_t *ctl, *code = NULL;
+    uint32_t len;
+    if (!find_stage(ex->prog, stage, &ctl, &code, &len)) return 0;
+    uint64_t o = nvn2_origin(code);
+    for (int i = 0; i < sl->n; i++)
+        if (sl->list[i] == o) return warn_once(warn, msg), 1;
+    return 0;
+}
+
+static int skip_vs_listed(const VkExec *ex) {
+    static SkipList sl = {-1};
+    return skip_listed(ex, NVN_STAGE_VS, &sl, "TOTK_SKIP_VS", W_SKIP_VS, "DKB_SKIP_VS is active: draws of the listed NVN 2 vertex stages are skipped");
+}
+
+static int skip_fs_listed(const VkExec *ex) {
+    static SkipList sl = {-1};
+    return skip_listed(ex, NVN_STAGE_FS, &sl, "TOTK_SKIP_FS", W_SKIP_FS, "DKB_SKIP_FS is active: draws of the listed NVN 2 fragment stages are skipped");
+}
+
 static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM = {-1};
 
 // Numeric handles are relative to the active descriptor tables. Keep the per-handle memos only while those tables
@@ -2538,7 +2574,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         native_gs_vs = vs, native_gs_fs = fs;
         if (gs_wait) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
     }
-    if (light_quad_fault_skip(ex, vs, fs)) return 0;
+    if (light_quad_fault_skip(ex, vs, fs) || skip_vs_listed(ex) || skip_fs_listed(ex)) return 0;
     if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs))) return 0;
     if (!geometry_feedback_safe(ex, vs, gs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
