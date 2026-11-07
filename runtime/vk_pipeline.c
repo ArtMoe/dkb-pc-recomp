@@ -1135,10 +1135,109 @@ static uint32_t *spv_override(const uint32_t *w, uint64_t words, uint64_t *out_w
     return NULL;
 }
 
+// DKB_FMZ=vertex|all (debug workaround for #75, off by default): NVIDIA's fused-multiply-zero rule (the DX9 rule, 0 * x = 0
+// even for Inf and NaN) for 32-bit float scalar and vector OpFMul and GLSL.std.450 Fma. Each such instruction
+//   r = a * b       becomes   t = a * b;     r = (a == 0 || b == 0) ? 0 : t
+//   r = fma(a,b,c)  becomes   t = fma(a,b,c); r = (a == 0 || b == 0) ? c : t
+// and keeps its original result id r, so decorations and uses stay valid. Only modules of the chosen stage (vertex, or
+// every stage) are rewritten. NULL when nothing is rewritten.
+static uint32_t *spirv_fmz(const uint32_t *w, uint64_t n, int vertex_only, uint64_t *out_n, unsigned *n_mul, unsigned *n_fma) {
+    enum { OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_TYPE_BOOL = 20, OP_FMUL = 133, OP_FORD_EQUAL = 180,
+           OP_LOGICAL_OR = 166, OP_SELECT = 169, EXT_FMA = 50 };
+    if (n < 5) return NULL;
+    uint32_t bound = w[3], glsl = 0, model = ~0u, boolt[5] = {0}, nb = bound;
+    uint32_t *comps = calloc(bound, 4), *f32 = calloc(bound, 4), *nullc = calloc(bound, 4), *need = calloc(bound, 4);
+    uint32_t *o = NULL;
+    uint32_t need_bool[5] = {0}, newbool[5] = {0};
+    uint64_t fn_at = 0, extra = 0;
+    unsigned mul = 0, fma = 0;
+    int ok = comps && f32 && nullc && need;
+    for (uint64_t i = 5; ok && i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) { ok = 0; break; }
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_ENTRY_POINT && len >= 3 && model == ~0u) model = a[0];
+        else if (op == OP_EXT_INST_IMPORT && len >= 3 && a[0] < bound && !strcmp((const char *)(a + 1), "GLSL.std.450")) glsl = a[0];
+        else if (op == OP_TYPE_BOOL && len == 2 && a[0] < bound) boolt[1] = a[0];
+        else if (op == SPV_OP_TYPE_FLOAT && len >= 3 && a[0] < bound && a[1] == 32) f32[a[0]] = 1, comps[a[0]] = 1;
+        else if (op == SPV_OP_TYPE_VECTOR && len == 4 && a[0] < bound && a[1] < bound && f32[a[1]] && a[2] >= 2 && a[2] <= 4)
+            f32[a[0]] = 1, comps[a[0]] = a[2];
+        else if (op == SPV_OP_CONSTANT_NULL && len == 3 && a[0] < bound) nullc[a[0]] = a[1];
+        else if (op == SPV_OP_FUNCTION) {
+            if (!fn_at) fn_at = i;
+            if (model == ~0u || (vertex_only && model != 0)) { ok = 0; break; }
+        } else if ((op == OP_FMUL && len == 5) || (op == OP_EXT_INST && len == 8 && glsl && a[2] == glsl && a[3] == EXT_FMA)) {
+            if (a[0] < bound && f32[a[0]]) {
+                need[a[0]] = 1, need_bool[comps[a[0]]] = 1;
+                if (op == OP_FMUL) mul++, extra += 21; else fma++, extra += 21;
+            }
+        }
+        i += len;
+    }
+    if (!ok || !fn_at || !(mul + fma)) { free(comps), free(f32), free(nullc), free(need); return NULL; }
+    for (int c = 2; c <= 4; c++) if (need_bool[c]) need_bool[1] = 1;
+    for (int c = 1; c <= 4; c++) if (need_bool[c] && !boolt[c]) newbool[c] = boolt[c] = nb++, extra += c == 1 ? 2 : 4;
+    for (uint32_t t = 1; t < bound; t++) if (need[t] && !nullc[t]) nullc[t] = nb++, need[t] = 2, extra += 3;
+    o = malloc((n + extra + 8 * 4) * 4);
+    if (!o) { free(comps), free(f32), free(nullc), free(need); return NULL; }
+    uint64_t p = 0;
+    memcpy(o, w, fn_at * 4), p = fn_at;
+    for (int c = 1; c <= 4; c++) {
+        if (!newbool[c]) continue;
+        if (c == 1) o[p++] = 2u << 16 | OP_TYPE_BOOL, o[p++] = boolt[1];
+        else o[p++] = 4u << 16 | SPV_OP_TYPE_VECTOR, o[p++] = boolt[c], o[p++] = boolt[1], o[p++] = c;
+    }
+    // OpConstantNull's result id is the one we built; the table maps type -> id, so write (type, id) pairs
+    for (uint32_t t = 1; t < bound; t++)
+        if (need[t] == 2) o[p++] = 3u << 16 | SPV_OP_CONSTANT_NULL, o[p++] = t, o[p++] = nullc[t];
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        int is_mul = op == OP_FMUL && len == 5, is_fma = op == OP_EXT_INST && len == 8 && glsl && a[2] == glsl && a[3] == EXT_FMA;
+        if ((is_mul || is_fma) && a[0] < bound && f32[a[0]]) {
+            uint32_t T = a[0], r = a[1], x = a[is_mul ? 2 : 4], y = a[is_mul ? 3 : 5], B = boolt[comps[T]], N = nullc[T];
+            uint32_t t = nb++, za = nb++, zb = nb++, z = nb++;
+            if (is_mul) o[p++] = 5u << 16 | OP_FMUL, o[p++] = T, o[p++] = t, o[p++] = x, o[p++] = y;
+            else o[p++] = 8u << 16 | OP_EXT_INST, o[p++] = T, o[p++] = t, o[p++] = glsl, o[p++] = EXT_FMA, o[p++] = x, o[p++] = y, o[p++] = a[6];
+            o[p++] = 5u << 16 | OP_FORD_EQUAL, o[p++] = B, o[p++] = za, o[p++] = x, o[p++] = N;
+            o[p++] = 5u << 16 | OP_FORD_EQUAL, o[p++] = B, o[p++] = zb, o[p++] = y, o[p++] = N;
+            o[p++] = 5u << 16 | OP_LOGICAL_OR, o[p++] = B, o[p++] = z, o[p++] = za, o[p++] = zb;
+            o[p++] = 6u << 16 | OP_SELECT, o[p++] = T, o[p++] = r, o[p++] = z, o[p++] = is_mul ? N : a[6], o[p++] = t;
+        } else {
+            memcpy(o + p, w + i, len * 4), p += len;
+        }
+        i += len;
+    }
+    memcpy(o, w, 5 * 4);
+    o[3] = nb;
+    *out_n = p;
+    *n_mul = mul, *n_fma = fma;
+    free(comps), free(f32), free(nullc), free(need);
+    return o;
+}
+
 static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w, uint64_t words, int geometry_chain) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = geometry_chain ? spirv_fixup_linked(w, words, &fixed_n, 1) : spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    static int fmz_mode = -1;   // 0 off, 1 vertex stage only, 2 every stage
+    if (fmz_mode < 0) {
+        const char *e = cfg_get("TOTK_FMZ");
+        fmz_mode = !e || !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "vertex") ? 1 : !strcmp(e, "all") ? 2 : 0;
+        if (e && *e && !fmz_mode && strcmp(e, "0")) rt_log("vk: DKB_FMZ=%s ignored (use vertex or all)", e);
+    }
+    uint32_t *fmz = NULL;
+    if (fmz_mode) {
+        uint64_t fmz_n = 0;
+        unsigned nm = 0, nf = 0;
+        fmz = spirv_fmz(w, words, fmz_mode == 1, &fmz_n, &nm, &nf);
+        if (fmz) {
+            w = fmz, words = fmz_n;
+            uint64_t h = 0xcbf29ce484222325ull;
+            for (uint64_t i = 0; i < words * 4; i++) h = (h ^ ((const uint8_t *)w)[i]) * 0x100000001b3ull;
+            rt_log("vk: FMZ rewrite %016llx mul=%u fma=%u", (unsigned long long)h, nm, nf);
+        }
+    }
     spv_dump(w, words, src);
     uint64_t ov_n = 0;
     uint32_t *ov = spv_override(w, words, &ov_n);
@@ -1147,6 +1246,7 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
     free(ov);
+    free(fmz);
     free(fixed);
     return r == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
