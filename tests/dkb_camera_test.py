@@ -39,9 +39,11 @@ static int32_t mx,my;
 static int patch_on;
 static int patch_lookups, patch_switches;
 static int fallback_calls;
-uint64_t plat_now_ns(void) { return 1000000000ull; }
+static uint64_t now_ns=1000000000ull;
+static double fallback_dt;
+uint64_t plat_now_ns(void) { return now_ns; }
 void input_mouse_stick(int32_t dx,int32_t dy,double dt,float sens,int32_t out[2]) {
-    (void)dt; (void)sens; fallback_calls++;out[0]=dx;out[1]=dy;
+    fallback_dt=dt; (void)sens; fallback_calls++;out[0]=dx;out[1]=dy;
 }
 int rt_patch_set(const char *name) { assert(!strcmp(name,"mousecamera")); patch_lookups++; return 0; }
 void rt_patch_switch(int set,int on) { assert(set==0);patch_switches++;patch_on=on; }
@@ -77,7 +79,9 @@ int main(void) {
     input_mouse_direct(d);assert(fabsf(d[0]-6.4f)<.00001f && mx==0);
     cfg_set("TOTK_MOUSE_SENS","5");mx=100;input_mouse_direct(d);assert(fabsf(d[0]-32)<.00001f);
     cfg_set("TOTK_MOUSE_CAMERA","0");mx=100;assert(!input_mouse_direct(d));assert(!patch_on && mx==100);
-    mouse_camera(stick);assert(stick[0]==100 && mx==0 && fallback_calls==1);
+    mouse_camera(stick);assert(stick[0]==0 && mx==0 && fallback_calls==0); // discard the direct-camera backlog
+    gfx_counters.frames++;now_ns+=16666667;mx=100;mouse_camera(stick);
+    assert(stick[0]==100 && mx==0 && fallback_calls==1 && fabs(fallback_dt-1.0/60)<1e-8);
     cfg_set("TOTK_MOUSE_CAMERA","1");input_mouse_direct(d);assert(patch_on && d[0]==0);
     assert(patch_lookups==1 && patch_switches==5); // sensitivity change, off, then on
     cfg_set("TOTK_MOUSE_SENS","0");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
@@ -89,6 +93,23 @@ int main(void) {
     g_menu=1;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);g_menu=0;
     g_block=1;mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);g_block=0;
     cfg_set("TOTK_INPUT","none");mx=100;assert(!input_mouse_direct(d));assert(d[0]==0);
+    cfg_set("TOTK_INPUT","auto");
+    // Leaving follow mode: suppress up to two frames, then discard the accumulated batch exactly once.
+    input_mouse_direct(d);int calls=fallback_calls;
+    for (int i=0;i<3;i++) {
+        mx+=300;my-=150;mouse_camera(stick);
+        assert(!stick[0] && !stick[1] && fallback_calls==calls && input_mouse_direct_recent());
+        gfx_counters.frames++;now_ns+=16666667;
+    }
+    assert(!input_mouse_direct_recent());mouse_camera(stick);
+    assert(!stick[0] && !stick[1] && !mx && !my && fallback_calls==calls);
+    mx=30;my=-15;mouse_camera(stick);assert(!stick[0] && mx==30); // held zero for this frame
+    gfx_counters.frames++;now_ns+=16666667;mouse_camera(stick);
+    assert(stick[0]==30 && stick[1]==-15 && fallback_calls==calls+1 && fabs(fallback_dt-1.0/60)<1e-8);
+    mouse_camera(stick);assert(stick[0]==30 && fallback_calls==calls+1); // hold the fresh sample
+    // Capture loss drains pending counts; returning to fallback must not replay them either.
+    input_mouse_direct(d);mouse_camera(stick);captured=0;mx=900;mouse_camera(stick);
+    assert(!stick[0] && !mx);captured=1;mouse_camera(stick);assert(!stick[0]);
     puts("PASS: raw distance, live sensitivity 0/1/5, one-time consumption, camera transitions, focus, menu, text entry, disabled input");
 }
 '''

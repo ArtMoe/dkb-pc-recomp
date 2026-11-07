@@ -56,6 +56,9 @@ static void camera_update(Cpu *c, unsigned site, uint64_t obj) {
         uint64_t timing = PTR(service, 0x10), options = PTR(service, 0x60);
         mouse.vertical = PTR(obj, 0x168);
         if (!timing || !options || !mouse.vertical || !(FLOAT(timing, 4) > 0)) return;
+        // CameraPoserFollowLimit exits its manual path at main+0x41b370 for either flag.
+        // Leave the raw counts for stick fallback and do not arm pitch activity in that mode.
+        if (BYTE(options, 0xb) || BYTE(obj, 0x2d4)) return;
         float unused;
         if (!pitch_limit(mouse.vertical, 0, &unused)) return;
         float delta[2];
@@ -110,7 +113,8 @@ static void pitch_end(Cpu *c) { camera_hook(c, PITCH_END, c->x[19]); }
 // chooses the next manual state. Do not force a state or interrupt a scripted/fixed camera.
 static void pitch_activity(Cpu *c) {
     plat_mutex_lock(&mouse_lock);
-    if (c == mouse.owner && c->x[19] == mouse.vertical && mouse.enabled && mouse.pitch != 0 && !mouse.pitch_used)
+    if (c == mouse.owner && c->x[19] == mouse.vertical && mouse.enabled && mouse.pitch != 0 && !mouse.pitch_used &&
+        input_mouse_direct_recent())
         c->v[0] = 0x3f800000u; // s0 = 1.0, an activity signal rather than an angular step
     plat_mutex_unlock(&mouse_lock);
 }

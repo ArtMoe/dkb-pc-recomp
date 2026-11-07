@@ -64,8 +64,8 @@ site dkbwide main 15209d4 97af27e0 adbf47f0 f81f0fe8 @page:x8 3dc00030 bd410d11 
 set mousecamera TOTK_MOUSE_CAMERA 0
 
 # CameraPoserFollowLimit's manual yaw update and CameraAngleVerticalCtrl::exeUserCtrl.
-# Keep each original instruction, then call the host adapter in runtime/dkb_camera.c. The four
-# dispatch addresses are outside main, at patch page +0x200/+0x210/+0x220/+0x230. These functions
+# Keep each original instruction, then call the host adapter in runtime/dkb_camera.c. The five
+# dispatch addresses are outside main, at patch page +0x200/+0x210/+0x220/+0x230/+0x240. These functions
 # save LR in their prologues and restore it after the sites, so the inserted BL preserves returns.
 # All seven BL immediates below assume the patch page is at main+0x2450000 (recomp/layout.py).
 site mousecamera main 41b35c f9405808 f9405808 9480d3a9   # yaw begin: x0 is the follow camera

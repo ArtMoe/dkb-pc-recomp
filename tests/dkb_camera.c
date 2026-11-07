@@ -26,9 +26,9 @@ static Cpu c;
 static int sample_calls;
 static float test_dx, test_dy;
 static int test_enabled = 1;
-static int64_t test_tick = 100;
-int64_t frame_step_world_us(void) { return test_tick; }
-int input_mouse_direct(float out[2]) { sample_calls++; out[0]=test_dx; out[1]=test_dy; return test_enabled; }
+static uint64_t test_frame, sampled_frame;
+int input_mouse_direct_recent(void) { return test_frame-sampled_frame <= 2; }
+int input_mouse_direct(float out[2]) { sample_calls++; sampled_frame=test_frame; out[0]=test_dx; out[1]=test_dy; return test_enabled; }
 static _Alignas(8) uint8_t follow[0x400], vertical[0x200], service[0x100], options[0x100], timing[0x40], limits[0x40], defaults[0x40];
 static void reset(void) {
     memset(&c,0,sizeof c); c.sp=0x10000; sample_calls=0;
@@ -39,7 +39,7 @@ static void reset(void) {
     PTR(service,0x60)=(uintptr_t)options; PTR(service,0x10)=(uintptr_t)timing;
     PTR(vertical,0xc8)=(uintptr_t)defaults; PTR(vertical,0xd0)=(uintptr_t)limits;
     FLOAT(timing,4)=1; FLOAT(vertical,0x104)=FLOAT(vertical,0x108)=10;
-    test_dx=test_dy=0; test_enabled=1; test_tick=100;
+    test_dx=test_dy=0; test_enabled=1; test_frame=sampled_frame=100;
 }
 static void begin(void) { camera_hook(&c,0,(uintptr_t)follow); }
 static void yaw(void) { camera_hook(&c,1,(uintptr_t)follow); }
@@ -72,7 +72,7 @@ int main(void) {
     Cpu before=c; callbacks[0](&c); callbacks[1](&c); assert(!memcmp(&c,&before,sizeof c));
     c.x[19]=(uintptr_t)vertical; before=c; callbacks[2](&c); callbacks[3](&c);
     assert(!memcmp(&c,&before,sizeof c)); assert(FLOAT(follow,0x204)==-8 && FLOAT(vertical,0x104)==6);
-    reset(); test_dx=test_dy=8; begin(); test_tick++; yaw(); pitch();
+    reset(); test_dx=test_dy=8; begin(); test_frame++; yaw(); pitch();
     assert(FLOAT(follow,0x204)==-8 && FLOAT(vertical,0x104)==18); // a present cannot discard motion
     reset(); test_dy=8; begin(); camera_hook(&c,PITCH_END,(uintptr_t)vertical);
     assert(FLOAT(vertical,0x104)==10); // no matching pitch begin
@@ -99,10 +99,26 @@ int main(void) {
     // Native transition checks receive activity only from a current, enabled vertical mouse sample.
     reset(); test_dy=0.01f; begin(); c.x[19]=(uintptr_t)vertical; c.v[0]=0;
     before=c; callbacks[4](&c); before.v[0]=0x3f800000u; assert(!memcmp(&c,&before,sizeof c));
-    test_tick++; c.v[0]=0; callbacks[4](&c); assert(c.v[0]==0x3f800000u);
+    test_frame++; c.v[0]=0; callbacks[4](&c); assert(c.v[0]==0x3f800000u);
     pitch(); c.v[0]=0; callbacks[4](&c); assert(c.v[0]==0); // consumed pitch cannot wake another update
     reset(); begin(); c.x[19]=(uintptr_t)vertical; callbacks[4](&c); assert(c.v[0]==0); // idle input must not wake pitch
     reset(); test_dy=1; test_enabled=0; begin(); c.x[19]=(uintptr_t)vertical; callbacks[4](&c); assert(c.v[0]==0);
+    reset(); test_dy=1; begin(); c.x[19]=(uintptr_t)vertical;
+    test_frame+=2; callbacks[4](&c); assert(c.v[0]==0x3f800000u);
+    test_frame++; c.v[0]=0; callbacks[4](&c); assert(c.v[0]==0); // no new BEGIN: expire activity
+
+    // Both native manual-camera guards must leave mouse counts and pitch activity alone.
+    for (int flags=1;flags<4;flags++) {
+        reset(); test_dx=8; test_dy=4; begin(); // first arm a valid sample
+        int calls=sample_calls;
+        BYTE(options,0xb)=(flags&1) ? 0x80 : 0;
+        BYTE(follow,0x2d4)=(flags&2) ? 1 : 0;
+        begin(); yaw(); pitch(); c.x[19]=(uintptr_t)vertical; callbacks[4](&c);
+        assert(sample_calls==calls && FLOAT(follow,0x204)==0 && FLOAT(vertical,0x104)==10 && c.v[0]==0);
+        BYTE(options,0xb)=BYTE(follow,0x2d4)=0;
+        begin(); yaw(); pitch();
+        assert(sample_calls==calls+1 && FLOAT(follow,0x204)==-8 && FLOAT(vertical,0x104)==14);
+    }
 
     // Every pointer read by the adapter can be absent; reject before consuming mouse motion.
     for (int missing=0;missing<7;missing++) {
@@ -134,7 +150,7 @@ int main(void) {
     camera_hook(&c,PITCH_END,(uintptr_t)vertical); assert(FLOAT(vertical,0x104)==10);
     camera_hook(&c,PITCH_BEGIN,(uintptr_t)vertical); c.sp-=0x100;
     camera_hook(&c,PITCH_END,(uintptr_t)vertical); assert(FLOAT(vertical,0x104)==10); c.sp+=0x100;
-    test_tick+=3; camera_hook(&c,PITCH_END,(uintptr_t)vertical); yaw();
+    test_frame+=3; camera_hook(&c,PITCH_END,(uintptr_t)vertical); yaw();
     assert(FLOAT(follow,0x204)==-8 && FLOAT(vertical,0x104)==18);
     FLOAT(follow,0x204)=0; yaw(); pitch();
     assert(FLOAT(follow,0x204)==0 && FLOAT(vertical,0x104)==18); // both axes are single-use

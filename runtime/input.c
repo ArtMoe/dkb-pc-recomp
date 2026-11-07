@@ -290,6 +290,7 @@ static int mouse_direct_mode(void) {
 static void mouse_camera(int32_t out[2]) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
+    static int resume;
     uint64_t now = plat_now_ns();
     int32_t dx, dy;
     uint64_t current_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -297,6 +298,7 @@ static void mouse_camera(int32_t out[2]) {
         // The native orbit consumes raw motion itself. Do not also turn it into stick input.
         held[0] = held[1] = 0;
         frame = ~0ull;
+        resume = 1;
         out[0] = out[1] = 0;
         return;
     }
@@ -304,6 +306,15 @@ static void mouse_camera(int32_t out[2]) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
         frame = ~0ull;
+        resume = 0;
+    } else if (resume) {
+        // Counts left by the direct camera can span several frames. Drop that first batch
+        // and start a fresh interval instead of converting it with the 4 ms minimum dt.
+        ikb_mouse_take(&dx, &dy);
+        held[0] = held[1] = 0;
+        frame = current_frame;
+        t0 = now;
+        resume = 0;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         double age = frame == ~0ull ? 0 : (double)(now - t0) / 1e9;
@@ -569,6 +580,14 @@ int input_mouse_direct(float degrees[2]) {
     degrees[1] = enabled && continuous ? dy * scale : 0;
     plat_mutex_unlock(&lock);
     return enabled && scale > 0;
+}
+
+int input_mouse_direct_recent(void) {
+    plat_mutex_lock(&lock);
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    int recent = mouse_direct_frame != ~0ull && frame - mouse_direct_frame <= 2;
+    plat_mutex_unlock(&lock);
+    return recent;
 }
 
 int input_cursor_allowed(void) {
