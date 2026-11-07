@@ -2158,6 +2158,16 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     int k = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
     if (B.pipe[k] == p) return;
     vkCmdBindPipeline(ex->cb, bp, p);
+    if (vk_ctx()->has_nv_checkpoints && vk_checkpoints_on()) {   // DKB_GPU_CHECKPOINTS=1: name the shaders the checkpoint's pipeline holds
+        uint64_t o[3] = {0};
+        const uint8_t *ctl, *code;
+        uint32_t len;
+        static const int stages[2][3] = {{NVN_STAGE_VS, NVN_STAGE_GS, NVN_STAGE_FS}, {NVN_STAGE_CS, -1, -1}};
+        for (int i = 0; i < 3 && ex->prog; i++)
+            if (stages[k][i] >= 0 && find_stage(ex->prog, stages[k][i], &ctl, &code, &len)) o[i] = nvn2_origin(code);
+        vk_checkpoint_note(p, o[0], o[1], o[2]);
+        rec_checkpoint(ex->cb, p);
+    }
     ex->recorded++;
     B.pipe[k] = p;
     if (!k) B.st_valid = 0;

@@ -75,6 +75,7 @@ Useful settings, as environment variables (`set NAME=value` in the same Command 
 | `TOTK_EXPERIMENTAL_GEOMETRY=1` | Replays draws with an ordinary geometry stage through it (#52). Off by default; other geometry draws are rejected once in the log. |
 | `TOTK_NATIVE_GS=0` (or `DKB_NATIVE_GS=0`) | Turns off the replay of the game's native passthrough geometry stages on the portable path. That replay draws the destructible terrain (#45) and is on by default; with it off the terrain is black. The varyings are inferred, not read from the hardware skip mask. |
 | `DKB_GEOMETRY_CONTEXT=1` | Logs the first 12 draws with a geometry stage and their buffers (#58). `DKB_GEOMETRY_CONTEXT_ORIGIN=<hex>` keeps only draws with that stage origin. |
+| `DKB_GPU_CHECKPOINTS=1` | On NVIDIA (VK_NV_device_diagnostic_checkpoints), marks every pipeline bind so that a lost device logs the last checkpoints the GPU reached with the NVN 2 names of the shaders of each pipeline (#75). Off by default. AMD always has its own breadcrumbs. |
 | `TOTK_TRACE=codec` | Log each call of the video decoder that moves a buffer or a picture. For guide movies that stop or show a flat colour. |
 
 The settings keep TotK Recomp's `TOTK_` names, so its fixes apply without a rename. Each one can also be written with

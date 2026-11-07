@@ -249,6 +249,14 @@ static int create_device(void) {
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
     if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }
+    // NVIDIA's counterpart, opt-in because every pipeline bind then carries a checkpoint command.
+    {
+        const char *e = cfg_get("TOTK_GPU_CHECKPOINTS");
+        if (e && !strcmp(e, "1") && has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
+            g_vk.has_nv_checkpoints = 1;
+            ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+        }
+    }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {

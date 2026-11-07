@@ -25,6 +25,7 @@ void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains
 
 // Extension commands called through device function pointers.
 void rec_crumb(VkCommandBuffer cb, int kind, uint64_t n);   // vk_crumb in order with this command buffer's packets
+void rec_checkpoint(VkCommandBuffer cb, const void *marker);   // vk_checkpoint in order with this command buffer's packets
 void rec_push_tpl(PFN_vkCmdPushDescriptorSetWithTemplateKHR fn, VkCommandBuffer cb, VkDescriptorUpdateTemplate tpl,
                   VkPipelineLayout layout, uint32_t set, const void *data, uint32_t bytes);   // data: bytes read by tpl
 void rec_push(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout,
