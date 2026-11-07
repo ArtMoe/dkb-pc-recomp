@@ -489,8 +489,10 @@ __asm__(".text\n"
         "    leaq 8(%rsp), %rsp\n"
         "    jmpq *-8(%rsp)\n"
         ".seh_endproc\n");
+#elif defined(__aarch64__) && !defined(__APPLE__)
+#error "kern_ap_stub: the AArch64 version is written for Mach-O (macOS symbol names, plat_intr_return)"
 #elif defined(__aarch64__)
-// The AArch64 version. Apple's arm64 ABI keeps a 128-byte red zone below sp (Clang puts the locals of leaf functions
+// The AArch64 version, macOS. Apple's arm64 ABI keeps a 128-byte red zone below sp (Clang puts the locals of leaf functions
 // there, and lifted functions are leaves), so the frame goes below it. The frame is a PlatIntrCtx: every general
 // register, sp, the interrupted pc, NZCV, FPCR, FPSR and all 32 SIMD registers at their full 128 bits. AArch64 has no
 // jump through memory and the interrupted code may have any register live, x30 included (a leaf keeps its return
