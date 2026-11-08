@@ -46,6 +46,7 @@ typedef struct PoolRec {
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
     volatile int32_t used;                // resolved at least once: the GPU may still read it at finalize
+    volatile uint8_t lazy;                // POOL_IMPORT whose import is deferred to the first GPU use (TOTK_POOL_LAZY, lazy_import)
     // TOTK_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
     uint32_t bound_sub;                // last submit that bound it as a buffer (dirty_sub), 0 never
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
@@ -89,6 +90,8 @@ static PoolRec **phys_list;            // physical pools by key, for MapVirtual 
 static int nphys, cap_phys;
 static int32_t n_imports, n_import_failures;
 static volatile uint64_t import_alloc_ns;   // all vkAllocateMemory calls that imported guest memory (vk_mem_census logs it)
+static PlatMutex lazy_lock = PLAT_MUTEX_INIT;   // one deferred import at a time (the driver serializes them anyway)
+static volatile int32_t n_lazy_imports;         // pools imported on their first GPU use instead of at nvnMemoryPoolInitialize
 static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
 
 static VkBufferUsageFlags pool_usage(const VkCtx *c) {
@@ -209,6 +212,42 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     return 1;
 }
 
+// TOTK_POOL_LAZY=1: nvnMemoryPoolInitialize only records an imported pool, and the import waits for the first time the GPU
+// resolves an address in it. A profile of a level change showed hundreds of guest-memory imports, each about 20 ms of
+// NVIDIA driver time whatever its size, one at a time, with the guest threads blocked in them; the memory census of the
+// same runs had the GPU resolve only 6% of the imported pools at frame 600 and 27% at frame 5400. Off by default.
+// Shadow storage copies the guest pages when it is made, so it always imports at once.
+static int lazy_enabled(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_POOL_LAZY");
+        on = e && *e && strcmp(e, "0") && !shadow_on;
+        if (on) rt_log("vk: imported pools are imported on their first GPU use (TOTK_POOL_LAZY)");
+    }
+    return on;
+}
+
+// The deferred import. The caller holds pool_lock, shared or exclusive: a finalize needs it exclusively, so the record
+// stays alive here. Returns whether r has a GPU buffer afterwards.
+static int lazy_import(PoolRec *r) {
+    if (!__atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE)) return r->buf != VK_NULL_HANDLE;
+    plat_mutex_lock(&lazy_lock);
+    if (r->lazy) {
+        mem_thaw((uintptr_t)r->lo, r->size);   // the import may need write access to the pages
+        if (!import_pool(vk_ctx(), r, r->lo, r->size)) {
+            long n = plat_inc32(&n_import_failures);
+            if (n <= 8) rt_log("vk: pool %#llx (flags %#x, %#llx bytes) has no GPU buffer (%ld so far)", (unsigned long long)r->lo,
+                               r->flags, (unsigned long long)r->size, n);
+            r->buf = VK_NULL_HANDLE;
+        } else {
+            plat_inc32(&n_lazy_imports);
+        }
+        __atomic_store_n(&r->lazy, 0, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&lazy_lock);
+    return r->buf != VK_NULL_HANDLE;
+}
+
 // Physical pool: device-local memory of the pool size that both buffers and optimal-tiling images can be bound to.
 static int alloc_physical(VkCtx *c, PoolRec *r) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = r->size, .usage = pool_usage(c),
@@ -315,8 +354,17 @@ int vk_pool_init(pool_t *p) {
         ok = alloc_physical(c, r);
     } else {
         r->kind = POOL_IMPORT;
-        mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
-        ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
+        if (lazy_enabled()) {
+            // Deferred (lazy_import): the host range is the one import_pool would compute, for code that reads it early.
+            uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
+            r->import_lo = r->lo & ~(al - 1);
+            r->import_hi = (r->lo + r->size + al - 1) & ~(al - 1);
+            r->lazy = 1;
+            ok = 1;
+        } else {
+            mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
+            ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
+        }
         if (!ok) {
             // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.
             long n = plat_inc32(&n_import_failures);
@@ -495,6 +543,8 @@ int vk_mem_inspect(uint64_t addr, uint64_t size, VkMemInspect *out) {
     uint64_t remaining = r->size - rel;
     result.pool_flags = r->flags;
     if (r->kind == POOL_IMPORT) {
+        // A pool still waiting for its first GPU use has no buffer yet: the callers are passive diagnostics, so they
+        // report it as not backed instead of paying a ~20 ms import for a log line.
         if (!r->buf || addr < r->import_lo || addr + size > r->import_hi) goto done;
         result.pool_kind = VK_MEM_INSPECT_POOL_IMPORT;
         result.offset = addr - r->import_lo;
@@ -604,6 +654,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
+    if (r && r->kind == POOL_IMPORT && __atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE)) lazy_import(r);   // first GPU use
     if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);
         if ((i == 0 || pool_index.maxhi[i - 1] <= e->lo) && (i + 1 == pool_index.n || pool_index.e[i + 1].lo >= e->hi)) {
@@ -727,9 +778,9 @@ void vk_mem_census(uint64_t frame) {
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0);
     // How many imported pools the GPU has resolved at least once: the rest paid the import (about 20 ms of driver time
     // each on NVIDIA, whatever the size) for memory that only the CPU touched.
-    rt_log("mem: of the %llu imported pools, %llu (%.1f MiB) were resolved by the GPU so far; %.0f ms in all imports (%d)",
+    rt_log("mem: of the %llu imported pools, %llu (%.1f MiB) were resolved by the GPU so far; %.0f ms in all imports (%d, %d of them on first GPU use)",
            (unsigned long long)count[POOL_IMPORT], (unsigned long long)used_n, used_bytes / 1048576.0,
-           __atomic_load_n(&import_alloc_ns, __ATOMIC_RELAXED) / 1e6, n_imports);
+           __atomic_load_n(&import_alloc_ns, __ATOMIC_RELAXED) / 1e6, n_imports, n_lazy_imports);
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
