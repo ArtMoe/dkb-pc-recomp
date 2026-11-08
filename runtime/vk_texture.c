@@ -767,10 +767,15 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
 // uploaded again in every submission that bound it. On an M4 that grew to 17,000-20,000 re-uploads (about 3 GiB) per
 // 60 frames a minute into play, and the frame rate fell to 8-11 fps (#116). Instead, the storage bytes are hashed just
 // before each upload, and an untracked check uploads again only when the hash differs.
-// Why a match is safe: a texture is only re-uploaded while it is not GPU-owned, and every GPU write into its image
-// (vk_texture_gpu_written, alias_copy) makes it GPU-owned for good. So the image holds exactly the bytes of its last
-// upload, and equal storage means an equal image. The hash is taken before the copy, so a guest write racing the copy
-// leaves the stored hash older than the image and costs one extra upload, never a missed one.
+// Why a match is safe: a match is treated as a clean write-watch answer (ch == 0), which is what the tracked platforms
+// do for a texture whose pages did not change. Most GPU writes into the image (vk_texture_gpu_written, alias_copy)
+// make it GPU-owned for good, so it is never uploaded again. Two writers do not: storage-image stores
+// (tex_info_full in vk_exec_draw.c only calls vk_texture_storage_bound_locked) and the MoltenVK upscaler blit
+// (mvk_upscale_blit). Their results survive an unchanged-storage check exactly as they survive ch == 0 on Windows,
+// where the old macOS path wiped them on every submission. The hash is taken before the copy, so a guest write racing
+// the copy leaves the stored hash older than the image and costs one extra upload, never a missed one. The one miss
+// is an ABA: the guest changes a block A to B while it is hashed, the copy reads B, then the guest writes A back, so
+// the next check matches and the image keeps B. A write watch would catch that; the odds are small.
 static int tex_hash = -1;
 
 static inline uint64_t rotl64(uint64_t x, int r) { return x << r | x >> (64 - r); }
