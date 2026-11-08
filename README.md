@@ -17,8 +17,9 @@ As far as we know, no other static recompilation of a Switch 2 game is public.
 
 > [!IMPORTANT]
 > **No game files are included, and none ever will be.** You need your own copy of *Donkey Kong Bananza*, dumped
-> from your own console. Instructions for obtaining those files will not be provided. There are no downloadable
-> builds: everyone builds from their own dump.
+> from your own console. Instructions for obtaining those files will not be provided. The game itself is never
+> downloadable: the [release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries the installer, and
+> everyone builds the game from their own dump.
 
 ## Status
 
@@ -28,7 +29,8 @@ hand-played run reached the Ingot Isle Cave-In section. It still
 can crash (on NVIDIA two light quads are skipped to avoid a GPU fault,
 [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)), and
 many effects are missing.
-There is no release. An installer builds the game from your own dump: [docs/installer.md](docs/installer.md).
+The [first release (v0.1.0)](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries an installer that
+builds the game from your own dump: [docs/installer.md](docs/installer.md).
 Progress, day by day: [docs/devlog.md](docs/devlog.md).
 
 | Phase | | State |
@@ -121,11 +123,14 @@ Everything the build writes stays under `build\` and `generated\`, which git ign
 
 ## FAQ
 
-**Can I play it?** Not yet. It reaches the tutorial and crashes often. Follow the
+**Can I play it?** Partly. One hand-played run went from the title screen through the tutorial, its cutscene and the
+first stage to its end on an RTX 5060 Ti, with drops while a new area loads; other cards are untested and it can still
+crash. Follow the
 [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) or the [devlog](docs/devlog.md).
 
-**Will there be a download?** Only of the tools. The executable is made from the game's own code, so it cannot be
-shared. Everyone builds it from their own dump; the installer does this for you ([docs/installer.md](docs/installer.md)).
+**Is there a download?** Of the installer, on the [release page](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest).
+The executable is made from the game's own code, so it cannot be shared. Everyone builds it from their own dump; the
+installer does this for you ([docs/installer.md](docs/installer.md)).
 
 **Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
 
