@@ -124,16 +124,18 @@ Everything the build writes stays under `build\` and `generated\`, which git ign
 **Can I play it?** Not yet. It reaches the tutorial and crashes often. Follow the
 [roadmap](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/10) or the [devlog](docs/devlog.md).
 
-**Will there be a download?** No. The executable is made from the game's own code, so it cannot be shared. Everyone
-builds it from their own dump; the installer does this for you ([docs/installer.md](docs/installer.md)).
+**Will there be a download?** Only of the tools. The executable is made from the game's own code, so it cannot be
+shared. Everyone builds it from their own dump; the installer does this for you ([docs/installer.md](docs/installer.md)).
 
 **Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
 
-**Linux?** TotK Recomp's toolchain supports Linux, so it is possible; nobody has tried with Bananza yet.
+**Linux?** Preview. The release page carries `DKB-Setup-<version>-linux-x86_64.zip`: the sources and a setup script, not a
+binary. You install the system packages and it builds the game from your dump. The build from source is verified on AMD
+and NVIDIA GPUs ([docs/installer.md](docs/installer.md), "Bananza Linux and macOS packages").
 
-**macOS?** Builds and boots on Apple Silicon with MoltenVK: the game reaches the mode select
-([docs/building.md](docs/building.md), "macOS"). It is not playable there yet, and the destructible terrain is missing
-until the geometry stages have a vertex-stage replacement.
+**macOS?** Preview. `DKB-Setup-<version>-macos-arm64.zip` is the same kind of package. It builds and boots on Apple
+Silicon with MoltenVK: the game reaches the mode select ([docs/building.md](docs/building.md), "macOS"). It is not
+verified beyond that, and the destructible terrain is missing until the geometry stages have a vertex-stage replacement.
 
 **Why GPL?** The shader lowering comes from Eglantine (Eden Emulator Project), which is GPL. Files that came from TotK
 Recomp keep their MIT terms.

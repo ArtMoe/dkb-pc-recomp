@@ -211,7 +211,26 @@ at install); the lifted tree is `dkb100` instead of `v121`/`v143`.
 
 ## Linux release
 
-TotK only. There is no Linux release of Bananza yet; its release is the Windows `DKB-Setup-<version>-windows.zip`.
+TotK only. The AppImage described here is TotK's; Bananza has the source packages below.
+
+### Bananza Linux and macOS packages
+
+Preview. `DKB-Setup-<version>-linux-x86_64.zip` and `DKB-Setup-<version>-macos-arm64.zip` are built by
+`tools/make_release_posix.py --platform linux|macos --zip` in `.github/workflows/dkb-release.yml`, next to the Windows
+zip. They carry no binaries and no game data: the player already has the system packages, and the build runs on their
+machine. The folder holds `installer/`, `recomp/`, `tools/` (with the translator and its vendored sources), every
+`runtime/` source and header, `data/`, `licenses/`, `THIRD_PARTY_NOTICES.md`, `LICENSE*`, `VERSION` (version and commit, as
+on Windows), `dkb.ini.example`, `README-SETUP.txt` and `setup.sh` (Linux) or `setup.command` (macOS).
+
+The flow: unzip (the executable bit is kept), run `./setup.sh --check` to list what is missing (clang, lld, ninja, SDL3,
+Opus, libvpx, zstd, Vulkan headers, spirv-tools, .NET 10 SDK, uv, Git; Linux 6.7 or later, or macOS 14.4 or later on
+arm64) with the apt, dnf, pacman or brew command that installs it, then `./setup.sh --exefs DIR --romfs DIR --dest DIR`.
+Without `--check` the script creates `.venv` with uv (Python 3.12), installs `tools/requirements-installer.txt` and runs
+`python -m installer --game bananza` with the same arguments. It never uses sudo. The CI jobs run `--check` and
+`python -m installer --help` inside the assembled folder; they never see game files. The folder has no `python/`, so the
+installer runs in its repository mode: system clang, ninja and libraries, temp folder `build/install-temp`. Status: on
+Linux the build from source is verified on AMD and NVIDIA; macOS boots to the mode select without the destructible
+terrain ([building.md](building.md)).
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `TotK-Setup-x86_64.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
