@@ -132,7 +132,7 @@ crash. Follow the
 The executable is made from the game's own code, so it cannot be shared. Everyone builds it from their own dump; the
 installer does this for you ([docs/installer.md](docs/installer.md)).
 
-**Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
+**Which version of the game?** Base 1.0.0. Update 458752 has a build target (the installer picks it by the ExeFS hash) but nobody has run it through yet, and add-on content (DLC) is not supported yet.
 
 **Linux?** Preview. The release page carries `DKB-Setup-<version>-linux-x86_64.tar.gz`: the sources and a setup script, not a
 binary. You install the system packages and it builds the game from your dump. The build from source is verified on AMD
