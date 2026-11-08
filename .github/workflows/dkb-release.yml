@@ -57,6 +57,8 @@ jobs:
           sudo apt-get install -y clang lld ninja-build make cmake libopus-dev libvpx-dev libzstd-dev libvulkan-dev spirv-tools
       - name: Install SDL3 (not in Ubuntu 24.04)
         run: |
+          # outside the checkout: check_content scans the working tree and the SDL sources hold files over its size limit
+          cd "$RUNNER_TEMP"
           curl -fsSL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz | tar xz
           cmake -S SDL3-3.4.18 -B sdl-build -G Ninja -DSDL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build sdl-build

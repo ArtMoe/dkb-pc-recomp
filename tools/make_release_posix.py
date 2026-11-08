@@ -87,7 +87,7 @@ def main():
         shutil.copy2(ROOT / src, out / 'licenses' / dst)
     for lic in sorted(ROOT.glob('LICENSE*')):
         shutil.copy2(lic, out / lic.name)
-    shutil.copy2(ROOT / 'tools' / 'release' / SETUP[plat], out / SETUP[plat])
+    shutil.copy2(ROOT / 'tools' / 'release' / 'setup.sh', out / SETUP[plat])   # one script, named setup.command on macOS
     (out / 'README-SETUP.txt').write_text(
         README_SETUP.format(label=f'{plat} {ARCH[plat]}', status=STATUS[plat], requirements=REQUIREMENTS[plat],
                             setup='./' + SETUP[plat]), encoding='utf-8', newline='\n')
