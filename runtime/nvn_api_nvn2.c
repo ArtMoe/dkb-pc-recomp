@@ -70,13 +70,19 @@ NVN_API(nvnCommandBufferSetComputeOverlapMode) { (void)c; }
         (void)c;                                                                                                     \
         if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED)) rt_log("nvn2: " #n " accepted, not recorded yet");   \
     }
-#define NVN2_MODE_NOT_RECORDED(n, kind)                                                                               \
+// A mode call whose values up to `ok` are handled by doing nothing, with the reason in docs/nvn2-command-modes.md; a
+// larger value is logged once with its number, so a scene that needs more than the host gives shows up in the log.
+#define NVN2_MODE_HANDLED(n, kind, ok)                                                                                \
     NVN_API(n) {                                                                                                    \
         static volatile int32_t logged;                                                                             \
-        nvn_mode_trace(kind, arg_x(c, 0), 0, (uint32_t)arg_x(c, 1), 0);                                                \
-        if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED)) rt_log("nvn2: " #n " accepted, not recorded yet");  \
+        uint32_t mode = (uint32_t)arg_x(c, 1);                                                                      \
+        nvn_mode_trace(kind, arg_x(c, 0), 0, mode, 0);                                                              \
+        if (mode > (ok) && !__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))                                      \
+            rt_log("nvn2: " #n " mode %u is not supported (handled: 0..%u); accepted, not recorded", mode, (unsigned)(ok)); \
     }
-NVN2_MODE_NOT_RECORDED(nvnCommandBufferSetRecordingMode, NVN_MODE_RECORDING)
+// Recording mode: 0 and 1 are what the tutorial and cave call. 1 selects the SDK's compute synchronization path,
+// which the host's barriers around dispatches and passes already cover. 2 (copy fence) to 4 (packing) are not.
+NVN2_MODE_HANDLED(nvnCommandBufferSetRecordingMode, NVN_MODE_RECORDING, 1)
 NVN2_NOT_RECORDED(nvnCommandBufferBeginDeviceCommands)
 NVN2_NOT_RECORDED(nvnCommandBufferEndDeviceCommands)
 NVN2_NOT_RECORDED(nvnCommandBufferSubmitDeviceCommands)
@@ -121,5 +127,7 @@ NVN2_NOT_RECORDED(nvnCommandBufferSetComputeEnableConditional)
 NVN2_NOT_RECORDED(nvnCommandBufferSetCopyEnable)
 NVN2_NOT_RECORDED(nvnCommandBufferSetCopyEnableConditional)
 NVN2_NOT_RECORDED(nvnCommandBufferSetConservativeRasterMode)
-NVN2_MODE_NOT_RECORDED(nvnCommandBufferSetGeometryProcessingMode, NVN_MODE_GEOMETRY)
+// Geometry processing mode 0 is the traditional vertex pipeline, the only one the replay builds (every capture so far
+// called it with 0). A nonzero value selects the mesh pipeline, which has no Vulkan counterpart here yet.
+NVN2_MODE_HANDLED(nvnCommandBufferSetGeometryProcessingMode, NVN_MODE_GEOMETRY, 0)
 NVN2_NOT_RECORDED(nvnCommandBufferSetRepresentativeFragmentTest)
