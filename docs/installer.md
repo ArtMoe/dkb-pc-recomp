@@ -215,7 +215,7 @@ TotK only. The AppImage described here is TotK's; Bananza has the source package
 
 ### Bananza Linux and macOS packages
 
-Preview. `DKB-Setup-<version>-linux-x86_64.zip` and `DKB-Setup-<version>-macos-arm64.zip` are built by
+Preview. `DKB-Setup-<version>-linux-x86_64.tar.gz` and `DKB-Setup-<version>-macos-arm64.zip` are built by
 `tools/make_release_posix.py --platform linux|macos --zip` in `.github/workflows/dkb-release.yml`, next to the Windows
 zip. They carry no binaries and no game data: the player already has the system packages, and the build runs on their
 machine. The folder holds `installer/`, `recomp/`, `tools/` (with the translator and its vendored sources), every

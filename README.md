@@ -134,7 +134,7 @@ installer does this for you ([docs/installer.md](docs/installer.md)).
 
 **Which version of the game?** Base 1.0.0. Update 458752 has a different layout and is not supported yet.
 
-**Linux?** Preview. The release page carries `DKB-Setup-<version>-linux-x86_64.zip`: the sources and a setup script, not a
+**Linux?** Preview. The release page carries `DKB-Setup-<version>-linux-x86_64.tar.gz`: the sources and a setup script, not a
 binary. You install the system packages and it builds the game from your dump. The build from source is verified on AMD
 and NVIDIA GPUs ([docs/installer.md](docs/installer.md), "Bananza Linux and macOS packages").
 

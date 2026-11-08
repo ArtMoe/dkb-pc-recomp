@@ -1,7 +1,7 @@
 name: DKB setup zip
 
 # Builds DKB-Setup-<version>-windows.zip (the portable tools, the source and the installer GUI) and the Linux and macOS
-# source packages DKB-Setup-<version>-linux-x86_64.zip and -macos-arm64.zip (tools/make_release_posix.py), with no game data.
+# source packages DKB-Setup-<version>-linux-x86_64.tar.gz and -macos-arm64.zip (tools/make_release_posix.py), with no game data.
 # A manual run or a push to a tag only uploads the zips as workflow artifacts; a tag named v* also publishes them as a
 # GitHub release with the notes of .github/release-notes.md (0.x is experimental, see issue #85).
 
@@ -64,7 +64,7 @@ jobs:
           cmake --build sdl-build
           sudo cmake --install sdl-build
       - run: python tools/check_content.py
-      - run: python tools/make_release_posix.py --platform linux --zip
+      - run: python tools/make_release_posix.py --platform linux --pack
       - name: Check the package from its own folder
         run: |
           cd build/release/DKB-Setup-*-linux
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: DKB-Setup-linux
-          path: build/release/DKB-Setup-*-linux-x86_64.zip
+          path: build/release/DKB-Setup-*-linux-x86_64.tar.gz
           if-no-files-found: error
 
   macos:
@@ -95,7 +95,7 @@ jobs:
       - name: Install the build dependencies
         run: brew install llvm ninja sdl3 molten-vk vulkan-headers vulkan-loader opus libvpx zstd spirv-tools
       - run: python tools/check_content.py
-      - run: python tools/make_release_posix.py --platform macos --zip
+      - run: python tools/make_release_posix.py --platform macos --pack
       - name: Check the package from its own folder
         run: |
           cd build/release/DKB-Setup-*-macos
@@ -123,4 +123,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/DKB-Setup-*.zip --repo "$GITHUB_REPOSITORY" --latest --title "DKB Recomp $GITHUB_REF_NAME" --notes-file .github/release-notes.md --generate-notes
+          gh release create "$GITHUB_REF_NAME" dist/DKB-Setup-* --repo "$GITHUB_REPOSITORY" --latest --title "DKB Recomp $GITHUB_REF_NAME" --notes-file .github/release-notes.md --generate-notes

@@ -1,7 +1,7 @@
 """Assemble the Bananza source package for Linux or macOS (docs/installer.md, "Bananza Linux and macOS packages").
 
-    python tools/make_release_posix.py --platform linux [--out build/release/DKB-Setup-<version>-linux] [--zip]
-    python tools/make_release_posix.py --platform macos --zip
+    python tools/make_release_posix.py --platform linux [--out build/release/DKB-Setup-<version>-linux] [--pack]
+    python tools/make_release_posix.py --platform macos --pack
 
 The folder holds every runtime source, the lifter, the translator's sources and the CLI installer, but no game data and no
 binaries: the player already has the system packages, and setup.sh / setup.command (README-SETUP.txt) check them, create a
@@ -10,8 +10,10 @@ the Windows one of tools/make_release.py --game dkb minus the toolchain and the 
 copy, its version string and its check_content pass. Needs only Python 3.12+ and git.
 """
 import argparse
+import io
 import shutil
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -67,7 +69,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--platform', choices=sorted(ARCH), required=True)
     ap.add_argument('--out', type=Path, help='folder (replaced); default build/release/DKB-Setup-<version>-<platform>')
-    ap.add_argument('--zip', action='store_true', help='also write DKB-Setup-<version>-<platform>-<arch>.zip beside the folder')
+    ap.add_argument('--pack', action='store_true', help='also write the archive beside the folder: '
+                    'DKB-Setup-<version>-linux-x86_64.tar.gz or DKB-Setup-<version>-macos-arm64.zip (the usual format of each)')
     args = ap.parse_args()
     plat = args.platform
     ver = mr.version()
@@ -93,8 +96,29 @@ def main():
                             setup='./' + SETUP[plat]), encoding='utf-8', newline='\n')
     (out / SETUP[plat]).chmod(0o755)   # the zip carries its own bits; this is for a folder used directly
     mr.check_folder(out)
-    if args.zip:
-        write_zip(out, out.parent / f'DKB-Setup-{ver}-{plat}-{ARCH[plat]}.zip')
+    if args.pack:
+        if plat == 'linux':
+            write_tar(out, out.parent / f'DKB-Setup-{ver}-{plat}-{ARCH[plat]}.tar.gz')
+        else:
+            write_zip(out, out.parent / f'DKB-Setup-{ver}-{plat}-{ARCH[plat]}.zip')
+
+
+def is_exe(p):
+    return p.name.startswith('setup.') or p.suffix in ('.sh', '.command')
+
+
+def write_tar(out, path):
+    """The folder as a .tar.gz, the usual Linux archive: it stores the modes itself (0755 on setup.* and the shell scripts)."""
+    with tarfile.open(path, 'w:gz', compresslevel=6) as t:
+        for p in sorted(out.rglob('*')):
+            if p.is_file():
+                info = tarfile.TarInfo((Path(out.name) / p.relative_to(out)).as_posix())
+                data = p.read_bytes()
+                info.size, info.mode, info.mtime = len(data), 0o755 if is_exe(p) else 0o644, 0
+                info.uid = info.gid = 0
+                info.uname = info.gname = 'root'
+                t.addfile(info, io.BytesIO(data))
+    print(f'{path}: {mr.mib(path.stat().st_size)}')
 
 
 def write_zip(out, path):
@@ -104,8 +128,7 @@ def write_zip(out, path):
             if p.is_file():
                 info = zipfile.ZipInfo((Path(out.name) / p.relative_to(out)).as_posix(), (1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
-                exe = p.name.startswith('setup.') or p.suffix in ('.sh', '.command')
-                info.external_attr = (0o755 if exe else 0o644) << 16
+                info.external_attr = (0o755 if is_exe(p) else 0o644) << 16
                 z.writestr(info, p.read_bytes(), compresslevel=6)
     print(f'{path}: {mr.mib(path.stat().st_size)}')
 
