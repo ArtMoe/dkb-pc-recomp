@@ -212,16 +212,18 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     return 1;
 }
 
-// TOTK_POOL_LAZY=1: nvnMemoryPoolInitialize only records an imported pool, and the import waits for the first time the GPU
-// resolves an address in it. A profile of a level change showed hundreds of guest-memory imports, each about 20 ms of
-// NVIDIA driver time whatever its size, one at a time, with the guest threads blocked in them; the memory census of the
-// same runs had the GPU resolve only 6% of the imported pools at frame 600 and 27% at frame 5400. Off by default.
+// nvnMemoryPoolInitialize only records an imported pool, and the import waits for the first time the GPU resolves an
+// address in it (TOTK_POOL_LAZY=0 imports at once, as before). A profile of a level change showed hundreds of guest-memory
+// imports, each about 20 ms of NVIDIA driver time whatever its size, one at a time, with the guest threads blocked in
+// them; the memory census of the same runs had the GPU resolve only 6% of the imported pools at frame 600 and 27% at
+// frame 5400. On a scripted 72 s route (RTX 5060 Ti) it cut the imports from 3219 to 901 and their total from 27 s to
+// 1.2 s, and the stalls from four of 360 to 950 ms to one of 993 ms.
 // Shadow storage copies the guest pages when it is made, so it always imports at once.
 static int lazy_enabled(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = cfg_get("TOTK_POOL_LAZY");
-        on = e && *e && strcmp(e, "0") && !shadow_on;
+        on = !(e && !strcmp(e, "0")) && !shadow_on;
         if (on) rt_log("vk: imported pools are imported on their first GPU use (TOTK_POOL_LAZY)");
     }
     return on;
