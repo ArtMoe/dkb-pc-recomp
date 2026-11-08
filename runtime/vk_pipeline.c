@@ -397,6 +397,8 @@ VkPrimitiveTopology vk_pipeline_topology(int prim) {
     }
 }
 
+int vk_geometry_supported(void) { return P.f_geometry; }
+
 // Topology class (a pipeline's static topology only fixes the class): 0 point, 1 line, 2 triangle, 3 patch.
 uint8_t vk_geometry_input(uint32_t primitive) {
     // Vulkan Geometry Shading: these list/strip forms have the same GS input
@@ -1624,7 +1626,8 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
     if (!s->vs || !s->gs || gfx_shader_stage(s->vs) != GFX_STAGE_VS ||
         (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) return "geometry shader stage mismatch";
     const GfxShaderGeometry *g = gfx_shader_geometry(s->gs);
-    if (!P.f_geometry || !g ||
+    if (!P.f_geometry) return "device has no geometryShader";
+    if (!g ||
         (g->version != GFX_GEOMETRY_VERSION && g->version != GFX_GEOMETRY_PASSTHROUGH_VERSION) || g->passthrough ||
         !vk_geometry_input(s->prim) || vk_geometry_input(s->prim) != g->input ||
         g->input_vertices != input_vertices[g->input] || g->output < GFX_GEOMETRY_OUTPUT_POINTS ||

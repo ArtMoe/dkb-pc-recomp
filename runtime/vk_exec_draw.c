@@ -2449,6 +2449,13 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
                 warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");
                 return 0;
             }
+            // Metal has no geometry stage (MoltenVK): skip before the pipeline and the lowered GS are built. The vertex
+            // and fragment stages alone would draw black, so the draw is dropped and counted in draws skipped.
+            if (!vk_geometry_supported()) {
+                warn_once(W_GEOMETRY, "native GS: the device has no geometryShader: draws that need one are skipped");
+                __atomic_fetch_add(&gfx_counters.draws_skipped, 1, __ATOMIC_RELAXED);
+                return -1;
+            }
             geometry_input = GFX_GEOMETRY_TRIANGLES;
             return 1;
         }
