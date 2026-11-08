@@ -36,6 +36,10 @@
 // The code layout the translator sees (graphics: code[0x30..], compute: code[0..]; c1 = code[c1..length]
 // with c1 and length at control+0x700) follows tools/shader_census.py, itself MacNativeGames' totk shader tooling (MIT).
 #include <ctype.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -383,6 +387,14 @@ static int child_start(Svc *v) {
         return 0;
     }
     uint32_t err = 0;
+#ifndef _WIN32
+    // An archive unpacked without Unix modes leaves the translator unexecutable (issue #122: error 13 for every
+    // shader, so full-screen draws were dropped); make it executable once instead of failing every request.
+    if (access(xlate_exe, X_OK) != 0) {
+        if (chmod(xlate_exe, 0755) == 0) rt_log("gfx_shader: %s was not executable; fixed", xlate_exe);
+        else rt_log("gfx_shader: %s is not executable and chmod failed", xlate_exe);
+    }
+#endif
     v->child = plat_child_start(xlate_exe, "--serve", &err);
     if (!v->child) {
         rt_log("gfx_shader: cannot start %s (error %lu)", xlate_exe, (unsigned long)err);

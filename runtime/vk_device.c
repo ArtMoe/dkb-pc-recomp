@@ -373,8 +373,11 @@ static int create_device(void) {
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
+        // Under RADV the feedback layout is not the default: an RX 6600 hung (ring gfx timeout, no page fault) on the
+        // first frame that used it (issue #122, a guess until a tester confirms); TOTK_FEEDBACK=layout opts back in.
+        int layout_wanted = e && !strcmp(e, "layout") ? 1 : !vk_caps.radv;
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
-                      : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
+                      : layout_ok && layout_wanted && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
                : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (TOTK_FEEDBACK=0)",
