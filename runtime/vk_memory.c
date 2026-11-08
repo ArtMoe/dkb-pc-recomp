@@ -120,9 +120,32 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_hi = (addr + size + al - 1) & ~(al - 1);
     uint64_t n = r->import_hi - r->import_lo;
     VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    VkResult res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                               (void *)(uintptr_t)r->import_lo, &hp)
-                                : VK_ERROR_EXTENSION_NOT_PRESENT;
+    // The Vulkan spec ties the memory types to the pointer given, but every guest pool here is plain committed
+    // read/write memory (platform/win32.c plat_mem_reserve/plat_mem_commit: no write-combined, uncached or file-view
+    // pages), so the answer is assumed to be the same for all of them. NVIDIA's driver took long in this query for the big guest pools of a level change (five guest threads in turn, 1.8 s in a TOTK_PROFILE_SLOW dump:
+    // the callq before dkb.exe+9331ce7 is this call, handle type 0x80). The first answer is kept for the other pools;
+    // TOTK_HOST_PROPS_CACHE=0 asks every time. A type that would not do fails in vkAllocateMemory below, like before.
+    static volatile uint32_t host_bits;
+    static int cache_on = -1;
+    static int32_t n_slow_props;
+    if (cache_on < 0) {
+        const char *e = cfg_get("TOTK_HOST_PROPS_CACHE");
+        cache_on = !(e && !strcmp(e, "0"));
+    }
+    VkResult res;
+    uint32_t known = cache_on ? __atomic_load_n(&host_bits, __ATOMIC_ACQUIRE) : 0;
+    if (known) {
+        hp.memoryTypeBits = known, res = VK_SUCCESS;
+    } else {
+        uint64_t t0 = qpc();
+        res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                          (void *)(uintptr_t)r->import_lo, &hp)
+                           : VK_ERROR_EXTENSION_NOT_PRESENT;
+        double ms = (double)(qpc() - t0) / 1e6;
+        if (ms > 10.0 && plat_inc32(&n_slow_props) <= 16)
+            rt_log("vk: vkGetMemoryHostPointerPropertiesEXT of %llu MiB took %.1f ms", (unsigned long long)(n >> 20), ms);
+        if (res == VK_SUCCESS && hp.memoryTypeBits && cache_on) __atomic_store_n(&host_bits, hp.memoryTypeBits, __ATOMIC_RELEASE);
+    }
     if (res != VK_SUCCESS || !hp.memoryTypeBits) {
         rt_log("vk: pool %#llx+%#llx: host pointer not importable (%d)", (unsigned long long)addr, (unsigned long long)size, (int)res);
         return 0;
@@ -152,8 +175,26 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
                                            .pHostPointer = (void *)(uintptr_t)r->import_lo};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im, .allocationSize = n,
                                .memoryTypeIndex = (uint32_t)type};
-    if ((res = vkAllocateMemory(c->device, &ai, NULL, &r->mem)) != VK_SUCCESS ||
-        (res = vkBindBufferMemory(c->device, r->buf, r->mem, 0)) != VK_SUCCESS) {
+    static int32_t n_slow_alloc;
+    uint64_t ta = qpc();
+    res = vkAllocateMemory(c->device, &ai, NULL, &r->mem);
+    if (res != VK_SUCCESS && known && p_host_props) {
+        r->mem = VK_NULL_HANDLE;
+        VkMemoryHostPointerPropertiesEXT hp2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+        int t2 = -1;
+        if (p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)r->import_lo, &hp2) == VK_SUCCESS)
+            t2 = memory_type(c, req.memoryTypeBits & hp2.memoryTypeBits,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (t2 >= 0) {
+            ai.memoryTypeIndex = (uint32_t)t2;
+            res = vkAllocateMemory(c->device, &ai, NULL, &r->mem);
+        }
+    }
+    if (res != VK_SUCCESS) r->mem = VK_NULL_HANDLE;
+    double alloc_ms = (double)(qpc() - ta) / 1e6;
+    if (alloc_ms > 10.0 && plat_inc32(&n_slow_alloc) <= 32)
+        rt_log("vk: importing %llu MiB of guest memory took %.1f ms in vkAllocateMemory", (unsigned long long)(n >> 20), alloc_ms);
+    if (res != VK_SUCCESS || (res = vkBindBufferMemory(c->device, r->buf, r->mem, 0)) != VK_SUCCESS) {
         rt_log("vk: pool %#llx+%#llx: host memory import failed (%d)", (unsigned long long)addr, (unsigned long long)size, (int)res);
         if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
         vkDestroyBuffer(c->device, r->buf, NULL);
