@@ -52,7 +52,8 @@ check() {
         miss "Linux or macOS; this is $os"
     fi
     have clang || miss "clang"
-    have ld.lld || have lld || miss "lld"
+    # macOS links with the system linker: docs/building.md lists no lld for it, and Homebrew's llvm does not ship one
+    [ "$os" = Darwin ] || have ld.lld || have lld || miss "lld"
     have ninja || miss "ninja"
     have_header SDL3/SDL.h || miss "SDL3 development files"
     have_header opus/opus.h || miss "Opus development files"
