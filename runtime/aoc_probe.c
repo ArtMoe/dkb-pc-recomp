@@ -1,5 +1,5 @@
 // --probe-aoc: mount the supplied add-on content next to the executable and read it back, so the reader is exercised on
-// the real pack without the game. Every sampled file's size is compared with the index and its first 64 KiB hashed; with
+// the real pack without the game. Every sampled file's size is compared with the index and the whole file hashed; with
 // DKB_AOC_SOURCE=<romfs folder> (the folder tools/dkb_pack_romfs.py packed) the same bytes are read from the source and
 // the two hashes compared, which is what says the pack holds the content rather than merely parsing.
 //
@@ -14,7 +14,7 @@
 #include "host.h"
 #include "platform/platform.h"
 
-enum { SAMPLE = 64, HEAD = 64 << 10 };   // files to read, bytes hashed per file
+enum { SAMPLE = 64 };   // files to read, each hashed whole
 
 static int hex_eq(const uint8_t a[32], const uint8_t b[32]) { return !memcmp(a, b, 32); }
 
@@ -69,17 +69,13 @@ int probe_aoc(void) {
     uint32_t rc = aoc_mount("probeaoc", index);
     if (rc) {
         printf("probe-aoc: FAIL: aoc_mount(%u) = %#x\n", index, rc);
+        free(idx);
         return 1;
     }
 
     uint64_t want = rows < SAMPLE ? rows : SAMPLE;
     uint64_t checked = 0, compared = 0, bytes = 0;
     int failures = 0;
-    uint8_t *buf = malloc(HEAD);
-    if (!buf) {
-        printf("probe-aoc: FAIL: out of memory\n");
-        return 1;
-    }
     for (uint64_t k = 0; k < want; k++) {
         Row r;
         memcpy(&r, idx + 24 + k * 24, sizeof r);
@@ -98,11 +94,19 @@ int probe_aoc(void) {
             printf("  size %lld != index %llu: %s\n", (long long)got, (unsigned long long)r.size, rel);
             failures++;
         }
+        uint8_t *buf = malloc(r.size ? r.size : 1);
+        if (!buf) {
+            printf("  out of memory for %llu bytes: %s\n", (unsigned long long)r.size, rel);
+            aoc_close(h);
+            failures++;
+            continue;
+        }
         uint64_t n = 0;
-        uint32_t rd = aoc_read(&n, h, 0, buf, r.size < HEAD ? r.size : HEAD);
+        uint32_t rd = aoc_read(&n, h, 0, buf, r.size);
         aoc_close(h);
         if (rd) {
             printf("  read failed %#x: %s\n", rd, rel);
+            free(buf);
             failures++;
             continue;
         }
@@ -110,6 +114,7 @@ int probe_aoc(void) {
         bytes += n;
         uint8_t mine[32];
         rt_sha256(buf, (size_t)n, mine);
+        free(buf);
         if (src && *src) {
             char sp[2100];
             snprintf(sp, sizeof sp, "%s/%s", src, rel);
@@ -123,7 +128,7 @@ int probe_aoc(void) {
             uint8_t theirs[32];
             rt_sha256(sbuf, (size_t)(ssize < n ? ssize : n), theirs);
             free(sbuf);
-            if (ssize < n || !hex_eq(mine, theirs)) {
+            if (ssize != n || !hex_eq(mine, theirs)) {
                 char a[65], b[65];
                 hex32(mine, a);
                 hex32(theirs, b);
@@ -134,11 +139,12 @@ int probe_aoc(void) {
             compared++;
         }
     }
-    free(buf);
+    aoc_unmount("probeaoc");   // undo the mount; the probe may run in a process that goes on
+    free(idx);
 
-    printf("probe-aoc: content %u, %llu files in the index, %llu read (%llu bytes of %d KiB each), %llu compared with "
-           "the source folder\n", index, (unsigned long long)rows, (unsigned long long)checked,
-           (unsigned long long)bytes, HEAD >> 10, (unsigned long long)compared);
+    printf("probe-aoc: content %u, %llu files in the index, %llu read (%llu bytes, each hashed whole), %llu compared "
+           "with the source folder\n", index, (unsigned long long)rows, (unsigned long long)checked,
+           (unsigned long long)bytes, (unsigned long long)compared);
     if (failures) {
         printf("probe-aoc: FAILED (%d)\n", failures);
         return 1;

@@ -820,7 +820,7 @@ static void unmount(const char *name) {
     char probe[40];
     if (!n || n >= 32 || (snprintf(probe, sizeof probe, "%s:", name), !romfs_owns(probe) && !aoc_owns(probe)))
         rt_fatal("fs: unmount of unknown mount %s", name ? name : "(null)");
-    if (aoc_owns(probe)) rt_fatal("fs: unmount of add-on content %s: aoc_unmount is reached from its own override", name);
+    if (aoc_owns(probe)) aoc_unmount(name);   // the generic Unmount also ends an add-on content mount
 }
 
 static uint32_t commit(const char *name) {

@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Below the host file (0x2_...) and directory (0x3_...) handle ranges, above the RomFS one (0x1_...).
+// Above the RomFS (0x1_...), host file (0x2_...) and directory (0x3_...) handle ranges.
 #define AOC_HANDLE_BASE 0x400000000ull
 
 // The add-on contents found at start, in ascending index order. AOC_MAX is what nn::aoc::ListAddOnContent can page.
