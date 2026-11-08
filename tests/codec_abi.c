@@ -15,6 +15,7 @@ static int entry_count;
 #include "ov_codec.c"
 
 unsigned rt_trace;
+const char rt_game_target[] = "dkb458752";
 void rt_log(const char *fmt, ...) { (void)fmt; }
 void rt_fatal(const char *fmt, ...) { (void)fmt; abort(); }
 void plat_mutex_lock(PlatMutex *m) { (void)m; }

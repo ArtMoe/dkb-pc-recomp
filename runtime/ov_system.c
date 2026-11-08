@@ -159,6 +159,11 @@ static void ov_display_version(Cpu *c) {
     // The validated loose dump has no control metadata; do not invent a release version from its title version.
     char *out = arg_p(c, 0);
     memset(out, 0, 16);
+    // Base 1.0.0 has a validated release name (expected-dkb100.json display_version); the update's is unverified.
+    if (!strcmp(rt_game_target, "dkb100") && strlen(rt_game_display) < 16) {
+        memcpy(out, rt_game_display, strlen(rt_game_display));
+        return;
+    }
     memcpy(out, "unknown", sizeof "unknown");
     rt_log("oe: display version unavailable (no control metadata)");
 }
@@ -348,6 +353,8 @@ static void ov_aoc_list(Cpu *c) {
     if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
     ret_x(c, 0);
 }
+// int CountAddOnContent()
+static void ov_aoc_count(Cpu *c) { ret_x(c, 0); }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
 static void ov_abort_observer(Cpu *c) { (void)c; rt_log("diag: the host crash reporter observes aborts"); }
@@ -896,6 +903,7 @@ HOST_OVERRIDE("_ZN2nn3err9ShowErrorENS_6ResultE", ov_show_error);
 HOST_OVERRIDE("nndiagStartup", ov_diag_startup);
 HOST_OVERRIDE("_ZN2nn3aoc10InitializeEv", ov_aoc_initialize);
 HOST_OVERRIDE("_ZN2nn3aoc16ListAddOnContentEPiii", ov_aoc_list);
+HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
 HOST_OVERRIDE("_ZN2nn3err26InitializeContextWriterApiEv", ov_err_context);
 HOST_OVERRIDE("_ZN2nn4pctl10InitializeEv", ov_pctl_initialize);
 HOST_OVERRIDE("_ZN2nn4diag34InitializeApplicationAbortObserverEv", ov_abort_observer);

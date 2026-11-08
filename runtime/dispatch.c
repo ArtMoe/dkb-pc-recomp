@@ -57,7 +57,7 @@ void rt_guest_dump(Cpu *c) {
     }
 }
 
-static void fatal_v(Cpu *c, const char *fmt, va_list ap) {
+__attribute__((noreturn)) static void fatal_v(Cpu *c, const char *fmt, va_list ap) {
     rt_log_raw("FATAL: ", 7);
     rt_vlogf(fmt, ap);
     rt_log_raw("\n", 1);
@@ -78,12 +78,14 @@ void rt_fatal(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     fatal_v(NULL, fmt, ap);
+    va_end(ap);
 }
 
 void rt_fatal_guest(Cpu *c, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     fatal_v(c, fmt, ap);
+    va_end(ap);
 }
 
 static const RtModule *module_at(uint64_t pc) {

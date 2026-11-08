@@ -377,13 +377,20 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual((self.dest/'profile/save.bin').read_bytes(), b'synthetic user save')
 
     def test_success_retains_generated_code_and_objects(self):
+        self.update_fixture()   # only the update keeps generated code and objects
         self.assertEqual(self.run_install()[0], 0)
         workspace = next(self.temp.glob('dkb-*'))
         self.assertTrue((workspace/'gen/main/main_0000.c').is_file())
         self.assertEqual((workspace/'build/obj/guest.o').read_bytes(), b'synthetic object')
         self.assertFalse((workspace/'data').exists())
 
+    def test_base_install_removes_generated_code_and_objects(self):
+        self.assertEqual(self.run_install()[0], 0)
+        workspace = next(self.temp.glob('dkb-*'))
+        self.assertFalse((workspace/'gen').exists() or (workspace/'build').exists())
+
     def test_runtime_change_reuses_generated_code_and_assets(self):
+        self.update_fixture()   # only the update keeps generated code and objects
         self.assertEqual(self.run_install()[0], 0)
         workspace = next(self.temp.glob('dkb-*'))
         generated = workspace/'gen/main/main_0000.c'
@@ -446,6 +453,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertFalse(self.temp.exists())
 
     def test_missing_generated_output_is_regenerated_when_rebuilding(self):
+        self.update_fixture()   # only the update keeps generated code and objects
         self.assertEqual(self.run_install()[0], 0)
         workspace = next(self.temp.glob('dkb-*'))
         (workspace/'gen/main/main_0000.c').unlink()
@@ -456,6 +464,7 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
                          ['lift', 'compile', 'dkb_shaders', 'dkb_shaders', 'dkb_shaders', 'dkb_verify'])
 
     def test_corrupt_generated_output_is_regenerated_when_rebuilding(self):
+        self.update_fixture()   # only the update keeps generated code and objects
         self.assertEqual(self.run_install()[0], 0)
         workspace = next(self.temp.glob('dkb-*'))
         (workspace/'gen/main/main_0000.c').write_bytes(b'corrupt')

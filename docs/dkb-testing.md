@@ -12,7 +12,7 @@ executable, not the generated code, not the shader cache.
 - A GPU with Vulkan 1.3 and a current driver.
 - About 15 GB free for the build (the packed RomFS is about 9 GB), besides the space your dump takes.
 - *Donkey Kong Bananza* base version 1.0.0, dumped from your own Switch 2: the ExeFS (`main`, `sdk`, `main.npdm`) and
-  the RomFS as a folder. Update 458752 is not supported yet. This project does not explain how to dump the game.
+  the RomFS as a folder. Update 458752 is also supported (the installer picks the target by the `main` hash and, for it only, keeps the generated C and objects in `temp/gen` and `temp/build` so a second install does not relift or recompile; the base install removes them). This project does not explain how to dump the game.
   If your dump is a single `.nup` file (the container Eglantine and Eden load), `tools/extract_nup.py` writes both
   folders from its base package: `python tools\extract_nup.py <game>.nup --list` shows the packages, and
   `python tools\extract_nup.py <game>.nup --out build\extracted\dkb100-dump` writes `exefs` and `romfs` there, checking

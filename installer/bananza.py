@@ -652,7 +652,9 @@ class Cleanup(Step):
     id, always = 'cleanup', True
 
     def run(self, ctx):
-        for name in ('data', 'xlate', 'dotnet-home', 'nuget'):
+        # Update 458752 keeps generated C and objects so a second install does not relift or recompile.
+        keep = ctx.info['game'] != GAME
+        for name in ('data', 'xlate', 'dotnet-home', 'nuget') if keep else ('data', 'gen', 'build', 'xlate', 'dotnet-home', 'nuget'):
             p = ctx.temp / name
             if p.exists():
                 owned_dir(ctx, p)

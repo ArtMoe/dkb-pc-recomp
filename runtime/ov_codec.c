@@ -206,6 +206,10 @@ static void ov_vp9_fini(Cpu *c) {
 static void ov_vp9_flush(Cpu *c) {
     plat_mutex_lock(&lock);
     Dec *d = dec_of(arg_x(c, 0));
+    // The base build keeps the old rule (a decoded picture is dropped); only the update reserves it.
+    if (d && strcmp(rt_game_target, "dkb458752"))
+        for (int i = 0; i < SLOTS; i++)
+            if (d->slot[i].state == S_FILLED) d->slot[i].state = S_WAIT;
     if (d) queue_drop(d);   // the packets not decoded yet
     plat_mutex_unlock(&lock);
     TRACE("flush");
@@ -483,16 +487,16 @@ static void ov_sp_request(Cpu *c) {
     if (now) kern_signal_system_event(ev);
 }
 // bool TryWaitSyncPoint(const SyncPointHandle &): the poll form of the request above, which the guide-movie player
-// reaches through nn::gs::TryWaitNativeSync when it advances its queue of shown pictures. The pinned Eglantine notes
-// (build/reference/NX2_NOTES.md, 148) have a NativeSyncHandle carry the sync point and the value its frame is finished
-// at; the host has no sync point, so a decoder fence answers from its own buffer and anything else at once.
+// reaches through nn::gs::TryWaitNativeSync when it advances its queue of shown pictures. Eglantine
+// (its nvdrv syncpoint code, the NativeSyncHandle handling) has a NativeSyncHandle carry the sync point and the value
+// its frame is finished at; the host has no sync point, so a decoder fence answers from its own buffer and anything else at once.
 static void ov_sp_trywait_point(Cpu *c) {
     const uint32_t *h = arg_p(c, 0);
     uint32_t tok = h ? *h : 0;
     int now = 1;
     if ((tok & 0xffff0000u) == FENCE_TAG && (tok >> 8 & 0xff) < DECODERS && (tok & 0xff) < SLOTS) {
         plat_mutex_lock(&lock);
-        now = decs[tok >> 8 & 0xff].slot[tok & 0xff].state == S_FILLED;
+        now = decs[tok >> 8 & 0xff].slot[tok & 0xff].state != S_WAIT;   // the rule of RequestSyncPointEvent
         plat_mutex_unlock(&lock);
     }
     TRACE("sync point try wait %#x: %s", tok, now ? "signalled" : "waits for its picture");
