@@ -265,7 +265,8 @@ def preflight(layout, options, dest, temp, rep):
     if old is not None and (old.get('game') not in TARGETS or old.get('destination') != str(dest)):
         raise InstallError('dkb.dest_unrelated', path=str(dest))
     nup_arg = getattr(options, 'nup', None)
-    if nup_arg and (options.exefs or options.romfs):
+    # A package choice only means something for a .nup, so it counts as asking for one next to folders too.
+    if (nup_arg or getattr(options, 'nup_package', None)) and (options.exefs or options.romfs):
         raise InstallError('dkb.nup_and_folders')
     recorded = old['sources'] if old else {}
     if not nup_arg and not options.exefs and not options.romfs and recorded.get('nup'):

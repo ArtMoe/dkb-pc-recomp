@@ -609,6 +609,11 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         code, events = self.run_install()
         self.assertEqual(next(e['id'] for e in events if e['type'] == 'error'), 'dkb.nup_and_folders')
         self.options.exefs = None
+        # A package choice with folders and no .nup is refused too, not ignored.
+        self.options.nup, self.options.nup_package, self.options.exefs = None, 'base', self.exefs
+        code, events = self.run_install()
+        self.assertEqual(next(e['id'] for e in events if e['type'] == 'error'), 'dkb.nup_and_folders')
+        self.options.nup, self.options.nup_package, self.options.exefs = path, None, None
         path.write_bytes(b'PFS0' + bytes(0x200))
         code, events = self.run_install()
         self.assertEqual(next(e['id'] for e in events if e['type'] == 'error'), 'dkb.nup_invalid')
