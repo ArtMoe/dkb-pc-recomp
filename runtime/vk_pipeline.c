@@ -73,6 +73,7 @@ static struct {
     VkDevice device;
     VkPipelineCache cache;
     uint32_t max_push;
+    uint32_t max_stage_samplers;       // maxPerStageDescriptorSamplers: a push set stays within it (push_fits)
     int indep;                         // stage-independent layouts (vk_caps.gpl): vertex set 0, fragment set 1
     int push_stage;                    // GFX_STAGE_* whose set is pushed with independent layouts
     int gpl;                           // draws whose pipeline is building get a fast-linked one (vk_caps.gpl)
@@ -213,6 +214,7 @@ static int ensure_init(void) {
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pd};
     vkGetPhysicalDeviceProperties2(c->phys, &p2);
     P.max_push = pd.maxPushDescriptors;
+    P.max_stage_samplers = p2.properties.limits.maxPerStageDescriptorSamplers;
     P.indep = vk_caps.gpl;
     P.gpl = vk_caps.gpl;
     rt_log(P.gpl ? "vk_pipeline: graphics pipeline library on: a draw whose pipeline is building gets a fast-linked one, "
@@ -318,9 +320,9 @@ static int ensure_init(void) {
     if (P.dyn_wmask) P.dyn[P.n_dyn++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
     if (P.dyn_a2c) P.dyn[P.n_dyn++] = VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT;
     cache_load(c);
-    rt_log("vk_pipeline: max push descriptors %u; dynamic vertex input %d, depth clamp %d, polygon mode %d, blend enable %d, "
+    rt_log("vk_pipeline: max push descriptors %u, samplers per stage %u; dynamic vertex input %d, depth clamp %d, polygon mode %d, blend enable %d, "
            "blend equation %d, write mask %d, alpha to coverage %d; cache %s",
-           P.max_push, P.dyn_vi, P.dyn_clamp, P.dyn_poly, P.dyn_blend_en, P.dyn_blend_eq, P.dyn_wmask, P.dyn_a2c,
+           P.max_push, P.max_stage_samplers, P.dyn_vi, P.dyn_clamp, P.dyn_poly, P.dyn_blend_en, P.dyn_blend_eq, P.dyn_wmask, P.dyn_a2c,
            P.cache_path[0] ? P.cache_path : "<memory only>");
     keys_open();
     plat_xchg32(&P.ready, 1);
@@ -1846,6 +1848,30 @@ static int64_t bindings_sort(Bindings *B, uint64_t *h) {
     return total;
 }
 
+// Whether a set of n bindings holding total descriptors may be a push-descriptor set: it fits maxPushDescriptors and
+// no stage samples through more samplers than maxPerStageDescriptorSamplers. MoltenVK binds a push set slot by slot,
+// and Metal has 16 sampler slots per stage ([[sampler(0..15)]]): a Bananza G-buffer fragment shader with more failed
+// to compile and its draws were skipped. An ordinary set goes through Metal argument buffers there, which have no such
+// slots. Other drivers report thousands of samplers per stage, so their sets stay as they were.
+static int push_fits(const VkDescriptorSetLayoutBinding *b, uint32_t n, int64_t total) {
+    if (total > (int64_t)P.max_push) return 0;
+    static const VkShaderStageFlags st[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_GEOMETRY_BIT,
+                                            VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
+    for (unsigned s = 0; s < sizeof st / sizeof *st; s++) {
+        uint64_t k = 0;
+        for (uint32_t i = 0; i < n; i++)
+            if ((b[i].stageFlags & st[s]) && (b[i].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                                              b[i].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER))
+                k += b[i].descriptorCount;
+        if (k > P.max_stage_samplers) {
+            LOG_ONCE("vk_pipeline: a stage samples through more than %u samplers: its bindings go in an ordinary "
+                     "descriptor set instead of a push set (logged once)", P.max_stage_samplers);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static Layout *layout_get(Bindings *B) {
     uint64_t h = FNV0;
     int64_t total = bindings_sort(B, &h);
@@ -1857,7 +1883,7 @@ static Layout *layout_get(Bindings *B) {
     if (!l) return NULL;
     l->hash = h, l->n = B->n;
     memcpy(l->b, B->b, B->n * sizeof *B->b);
-    l->push = total <= (int64_t)P.max_push;
+    l->push = push_fits(l->b, l->n, total);
     VkDescriptorSetLayoutCreateInfo si = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                           .flags = l->push ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0,
                                           .bindingCount = l->n, .pBindings = l->b};
@@ -1903,8 +1929,8 @@ static Layout *layout_pair(Bindings *B, Bindings *F) {
     if (!l) return NULL;
     l->hash = h, l->n = n, l->n0 = n0;
     memcpy(l->b, B->b, n * sizeof *B->b);
-    l->push = P.push_stage == GFX_STAGE_VS && tv <= (int64_t)P.max_push;
-    l->push1 = P.push_stage == GFX_STAGE_FS && F->n && tf <= (int64_t)P.max_push;
+    l->push = P.push_stage == GFX_STAGE_VS && push_fits(l->b, n0, tv);
+    l->push1 = P.push_stage == GFX_STAGE_FS && F->n && push_fits(l->b + n0, n - n0, tf);
     VkDescriptorSetLayoutCreateInfo s0 = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                           .flags = l->push ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0,
                                           .bindingCount = n0, .pBindings = l->b};
