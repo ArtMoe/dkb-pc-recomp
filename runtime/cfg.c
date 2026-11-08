@@ -78,7 +78,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
-    {"EXPERIMENTAL_GEOMETRY", "performance"}, {"NATIVE_GS", "performance"}, {"MVK_UPSCALE_BLIT", "performance"},
+    {"EXPERIMENTAL_GEOMETRY", "performance"}, {"NATIVE_GS", "performance"},
     {"REC_BATCH", "performance"},
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_INDIRECT_RESET", "performance"}, {"FIX_VS_FAULT", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
