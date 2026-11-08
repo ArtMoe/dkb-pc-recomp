@@ -88,6 +88,7 @@ static pidx pool_index;                // POOL_IMPORT, POOL_PHYS and POOL_VIRT r
 static PoolRec **phys_list;            // physical pools by key, for MapVirtual requests
 static int nphys, cap_phys;
 static int32_t n_imports, n_import_failures;
+static volatile uint64_t import_alloc_ns;   // all vkAllocateMemory calls that imported guest memory (vk_mem_census logs it)
 static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
 
 static VkBufferUsageFlags pool_usage(const VkCtx *c) {
@@ -191,7 +192,9 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
         }
     }
     if (res != VK_SUCCESS) r->mem = VK_NULL_HANDLE;
-    double alloc_ms = (double)(qpc() - ta) / 1e6;
+    uint64_t alloc_ns = qpc() - ta;
+    __atomic_add_fetch(&import_alloc_ns, alloc_ns, __ATOMIC_RELAXED);
+    double alloc_ms = (double)alloc_ns / 1e6;
     if (alloc_ms > 10.0 && plat_inc32(&n_slow_alloc) <= 32)
         rt_log("vk: importing %llu MiB of guest memory took %.1f ms in vkAllocateMemory", (unsigned long long)(n >> 20), alloc_ms);
     if (res != VK_SUCCESS || (res = vkBindBufferMemory(c->device, r->buf, r->mem, 0)) != VK_SUCCESS) {
@@ -705,10 +708,11 @@ void vk_mem_census(uint64_t frame) {
     typedef struct { int kind; uint32_t flags; uint64_t n, bytes; } Group;
     Group g[64];
     int ng = 0;
-    uint64_t total[4] = {0}, count[4] = {0};
+    uint64_t total[4] = {0}, count[4] = {0}, used_n = 0, used_bytes = 0;
     plat_mutex_lock_shared(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) {
         const PoolRec *r = pool_index.e[i].buf;
+        if (r->kind == POOL_IMPORT && r->used) used_n++, used_bytes += r->size;
         int j = 0;
         while (j < ng && (g[j].kind != r->kind || g[j].flags != r->flags)) j++;
         if (j == ng && ng < 64) g[ng++] = (Group){r->kind, r->flags, 0, 0};
@@ -721,6 +725,11 @@ void vk_mem_census(uint64_t frame) {
            (unsigned long long)frame, (unsigned long long)count[POOL_IMPORT], total[POOL_IMPORT] / 1048576.0,
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0);
+    // How many imported pools the GPU has resolved at least once: the rest paid the import (about 20 ms of driver time
+    // each on NVIDIA, whatever the size) for memory that only the CPU touched.
+    rt_log("mem: of the %llu imported pools, %llu (%.1f MiB) were resolved by the GPU so far; %.0f ms in all imports (%d)",
+           (unsigned long long)count[POOL_IMPORT], (unsigned long long)used_n, used_bytes / 1048576.0,
+           __atomic_load_n(&import_alloc_ns, __ATOMIC_RELAXED) / 1e6, n_imports);
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
