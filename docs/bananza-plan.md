@@ -113,6 +113,16 @@ Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
 - Play-testing of update 3.2.0 (`dkb458752`): the installer supports it and it boots, but nobody has played it as
   far as the base has been played. Add-on content (`runtime/aoc_romfs.c`) is likewise untested in game.
 - Linux, which TotK Recomp's toolchain supports.
+- DLSS and temporal upscalers (checked 2026-11-09). The game does not use DLSS: with `nvnDlssNetworkInitialize`
+  answering success it still called no `nvnDlss*` proc in a 330 s run on 1.0.0, and a scan of the guest code finds
+  no reference to the DLSS slots of the NVN proc table in 1.0.0 or in 3.2.0 (the loader alone names them). Nor do the
+  frame dumps show a velocity target or a history texture, so the game has no temporal AA to borrow from. A host-side
+  DLSS, DLAA or FSR 3 upscaler would have to invent all its inputs, as TotK Recomp's `vk_dlaa.c` does (a sub-pixel
+  jitter added to the scene viewports, camera-only motion vectors from the depth buffer and the view-projection
+  constants). That needs the depth target and the constant-buffer layout found first, and camera-only vectors
+  ghost on animated characters. Frame generation has the same input needs. Until someone wants that work, the
+  options without it are the existing FSR 1 and SMAA passes, and the drivers' own frame generation (NVIDIA Smooth
+  Motion, AMD AFMF), which needs nothing from this project.
 
 ## Alongside
 
