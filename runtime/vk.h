@@ -426,6 +426,18 @@ uint32_t vk_texture_epoch(void);                    // the write-watch snapshot 
 VkSampler vk_sampler_by_id(const dpool_ref *pool, int id);
 VkSampler vk_sampler_for(const samp_par *s);        // cached by content
 int vk_sampler_params(const dpool_ref *pool, int id, samp_par *out);
+// DLSS in place of the game's upscaler (vk_dlss.c, upscaler = dlss, experimental, NVIDIA on Windows). vk_dlss_wanted:
+// the setting asks for it and nothing has failed yet. vk_dlss_instance_exts / vk_dlss_device_exts: the extensions NVIDIA
+// NGX asks for (at most max into out; the instance call loads the NGX core first). vk_dlss_record: DLSS of in (sampled,
+// GENERAL) into out (storage, GENERAL), recorded into cb, the replay's command buffer, behind the caller's full barrier;
+// fence is the value its submission signals. 1 = recorded (the caller forgets the bound state and puts a full barrier
+// after it); 0 = nothing recorded, the game's upscaler runs (after a failure for the rest of the run); -1 = NGX failed
+// after it may have recorded its own binds: the caller forgets the bound state and binds again before the game's one.
+int vk_dlss_wanted(void);
+int vk_dlss_instance_exts(const char **out, int max);
+int vk_dlss_device_exts(const char **out, int max);
+int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
+void vk_dlss_release(void);   // device idle, before it goes away
 
 // 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
 void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);

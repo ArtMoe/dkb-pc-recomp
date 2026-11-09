@@ -31,6 +31,11 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
     return 0;
 }
 
+static int listed(const char *const *names, uint32_t n, const char *name) {
+    for (uint32_t i = 0; i < n; i++) if (!strcmp(names[i], name)) return 1;
+    return 0;
+}
+
 static int layer_present(const char *name) {
     uint32_t n = 0;
     vkEnumerateInstanceLayerProperties(&n, NULL);
@@ -82,7 +87,7 @@ static int instance_ext_present(const char *name) {
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
-    const char *ext[12];
+    const char *ext[28];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 8);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
@@ -108,6 +113,12 @@ static int create_instance(void) {
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {   // HDR10 surface formats
         g_vk.has_swapchain_colorspace = 1;
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+    }
+    if (vk_dlss_wanted()) {   // upscaler = dlss: what NVIDIA NGX asks for (vk_dlss.c), where the loader offers it
+        const char *dx[16];
+        int nd = vk_dlss_instance_exts(dx, 16);
+        for (int i = 0; i < nd && n_ext < 26; i++)
+            if (!listed(ext, n_ext, dx[i]) && instance_ext_present(dx[i])) ext[n_ext++] = dx[i];
     }
     // MoltenVK is a portability implementation: the loader only lists it for an instance that asks for the portability
     // enumeration extension, and the logical device then enables VK_KHR_portability_subset (create_device). Only on
@@ -281,7 +292,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[32];
+    const char *ext[48];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
     // A portability implementation (MoltenVK) requires this one on every device it exposes; no feature of it is needed
@@ -357,7 +368,6 @@ static int create_device(void) {
         gpl_link = tail;
         CHAIN(gpl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
     }
-    free(ep);
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
@@ -371,6 +381,18 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
         if (!vk_caps_gpl(&c->gpl, &gp)) { *gpl_link = NULL; n_ext -= 2; }
     }
+    // upscaler = dlss on an NVIDIA GPU: the device extensions NVIDIA NGX asks for (vk_dlss.c), where the device has
+    // them, after the two above that n_ext -= 2 may take back. VK_EXT_buffer_device_address stays out when the core
+    // bufferDeviceAddress feature is on: both together are invalid (VUID-VkDeviceCreateInfo-pNext-04748).
+    if (vk_dlss_wanted() && g_vk.props.vendorID == 0x10de) {
+        const char *dx[16];
+        int nd = vk_dlss_device_exts(dx, 16);
+        for (int i = 0; i < nd && n_ext < 48; i++)
+            if (!listed(ext, n_ext, dx[i]) && has_ext(ep, ne, dx[i]) &&
+                !(c->f12.bufferDeviceAddress && !strcmp(dx[i], VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)))
+                ext[n_ext++] = dx[i];
+    }
+    free(ep);
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
     const char *miss = NULL;
     if (!c->f12.timelineSemaphore) miss = "timelineSemaphore";
@@ -459,6 +481,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_clear_shutdown(g_vk.device);
+    if (g_vk.device) vk_dlss_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);

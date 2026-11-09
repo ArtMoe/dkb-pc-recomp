@@ -111,6 +111,8 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   Rec. 709 to Rec. 2020 and PQ-encodes into the swapchain image. The in-game menu is drawn into an RGBA8 image and
   blended on at `hdr_ui_nits`. Without an HDR10 surface format (Windows with "Use HDR" off, a compositor without
   colour management) the swapchain stays SDR and none of this runs.
+- DLSS (`upscaler = dlss`, experimental, NVIDIA only, `vk_dlss.c`): the game's upscaler dispatch is replaced by NVIDIA
+  NGX DLSS on the same images, spatial only for now. Setup and limits: [dkb-dlss.md](dkb-dlss.md).
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

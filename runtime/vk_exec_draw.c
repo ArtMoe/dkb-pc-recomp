@@ -2930,6 +2930,28 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
     return 1;
 }
 
+// upscaler = dlss (experimental): the same dispatch of the game's upscaler is replaced by NVIDIA DLSS on its input
+// (texture slot 0) and output (image slot 1), whole images as above (vk_dlss.c). 0 when DLSS is off or failed, or the
+// images do not fit it: the shader then runs. NGX binds its own pipelines and descriptors into the command buffer, so
+// the caller forgets the bound state (vk_exec_draw_new_cb) after it; -1 (NGX failed after it may have bound its own):
+// the caller also binds the game's pipeline and resources again before its dispatch.
+static int dlss_upscale(VkExec *ex, const GfxShader *cs) {
+    if (!vk_dlss_wanted() || !mvk_upscale_cs(gfx_shader_spirv_fnv(cs))) return 0;
+    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+    view_t vs, vd;
+    int hvs = 0, hvd = 0;
+    const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+    const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+    if (!s || !t || s->samples > 1 || t->samples > 1 || s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D ||
+        !(s->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
+        static int warned;
+        if (!warned++) rt_log("dlss: the upscaler's images do not resolve to single-sampled 2D sampled and storage images: "
+                              "the game's upscaler runs for them");
+        return 0;
+    }
+    return vk_dlss_record(ex->cb, ex->fence, s, t);
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     static int skip = -1;   // DKB_SKIP_COMPUTE=1: drop every direct dispatch (bisecting GPU faults)
@@ -2952,11 +2974,21 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     bind_resources(ex, info);
     twin_dispatch = 0;
     int blit = mvk_upscale_blit(ex, cs);
-    if (!blit) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
+    int dlss = blit ? 0 : dlss_upscale(ex, cs);
+    if (dlss) vk_exec_draw_new_cb();   // NGX left its own pipeline and descriptors bound
+    if (dlss < 0) {                    // it failed: the game's upscaler runs on its own binds again
+        bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+        twin_dispatch = 1;
+        bind_resources(ex, info);
+        twin_dispatch = 0;
+        dlss = 0;
+    }
+    if (!blit && !dlss) vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     // The blit is a transfer write, where what follows expects a compute-shader write: a full barrier makes it visible
-    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads).
-    if (blit) vk_exec_barrier(ex);
+    // to every later access (the one before it, vk_exec_barrier above, already covers the transfer reads). DLSS's
+    // writes get the same.
+    if (blit || dlss) vk_exec_barrier(ex);
     note_work(ex, 2, (uint64_t)d->x * (uint64_t)d->y * (uint64_t)d->z);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }

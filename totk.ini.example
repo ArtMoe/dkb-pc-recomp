@@ -143,6 +143,9 @@
 # render_scale = game
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
+# upscaler = dlss (experimental, NVIDIA RTX only, read at start) also replaces the game's own upscaler with NVIDIA DLSS
+# and keeps FSR for the window; it needs nvngx_dlss.dll next to dkb.exe (docs/dkb-dlss.md) and falls back to the
+# game's upscaler, with a "dlss:" line in the log, when anything is missing.
 # upscaler = fsr
 # sharpness = 80
 # SMAA 1x anti-aliasing of the final picture: off (the default), low, medium or high. It runs after the picture is scaled to
