@@ -719,6 +719,8 @@ static void tab_screen(float scale) {
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    static const UiTextId smaa[] = {UI_MENU_OFF, UI_MENU_SMAA_LOW, UI_MENU_SMAA_MEDIUM, UI_MENU_SMAA_HIGH};
+    opt_choice("TOTK_SMAA", UI_MENU_SMAA, smaa, 4, UI_MENU_SMAA_DESC);
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");

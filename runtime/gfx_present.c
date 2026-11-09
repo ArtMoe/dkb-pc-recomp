@@ -699,6 +699,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     }
+    // SMAA (TOTK_SMAA, vk_smaa.c) on the scaled picture, before the menu overlay; it leaves the image in TRANSFER_DST
+    vk_smaa_record(cb, dst, to);
     // last: the image's layout, and the stage and access of its last write, as each step leaves it
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -811,6 +813,7 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_smaa_release();
         vk_color_release();
         free_capture();
         free_thumbs();

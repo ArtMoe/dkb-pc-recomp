@@ -89,6 +89,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_SMAA] = "Anti-aliasing (SMAA)",
+    [UI_MENU_SMAA_DESC] = "Smooths jagged edges on the final picture, after it is scaled to the window and before this "
+                          "menu is drawn. The HUD is smoothed too. Higher quality costs more GPU time.",
+    [UI_MENU_SMAA_LOW] = "Low", [UI_MENU_SMAA_MEDIUM] = "Medium", [UI_MENU_SMAA_HIGH] = "High",
     [UI_MENU_COLOR] = "Colour",
     [UI_MENU_COLOR_PRESET] = "Colour profile",
     [UI_MENU_COLOR_PRESET_DESC] = "Sets the four values below. Vivid: more contrast and saturation, shadows opened a "
@@ -382,6 +386,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_SMAA] = "Сглаживание (SMAA)",
+    [UI_MENU_SMAA_DESC] = "Сглаживает лесенки на готовой картинке после масштабирования под окно и до отрисовки этого "
+                          "меню. Интерфейс игры тоже сглаживается. Чем выше качество, тем больше нагрузка на GPU.",
+    [UI_MENU_SMAA_LOW] = "Низкое", [UI_MENU_SMAA_MEDIUM] = "Среднее", [UI_MENU_SMAA_HIGH] = "Высокое",
     [UI_MENU_COLOR] = "Цвет",
     [UI_MENU_COLOR_PRESET] = "Цветовой профиль",
     [UI_MENU_COLOR_PRESET_DESC] = "Задаёт четыре значения ниже. «Яркий»: больше контраста и насыщенности, тени немного "
