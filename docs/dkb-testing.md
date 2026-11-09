@@ -179,10 +179,17 @@ Run the layout, projection/register-preservation, and configuration checks with:
 ```powershell
 python tests/dkb_wide_layout_test.py
 python tests/dkb_wide_projection_test.py
+python tests/dkb_wide_projection_test.py --table recomp/patches-dkb458752.txt
 clang -O2 -march=x86-64-v3 -I runtime tests/dkb_wide_test.c -o build/dkb-wide-test.exe
 build/dkb-wide-test.exe
 build/ultrawide/dkb.exe --probe-cfg
 ```
+
+The 3.2.0 patch table is generated from the 1.0.0 one. After touching `recomp/patches-dkb100.txt` or the tool, run
+`python tools/port_patches.py --from dkb100 --to dkb458752 --sibling 5ad9f0=5ada00` again and diff the result against
+the committed `recomp/patches-dkb458752.txt` (it prints every loose, sibling and re-targeted site to stderr for
+review), and run `python tools/port_patches.py --self-check` (the 1.0.0 table mapped onto itself must have no
+deltas).
 
 ## What to report
 

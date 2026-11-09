@@ -21,9 +21,10 @@ void dkb_wide_init(void) {
     wide_output[1] = 1620;
     int set = rt_patch_set("dkbwide");
     if (set < 0) {
-        // Update 3.2.0 carries no code patches (recomp/patches-dkb458752.txt), and the output resolution, ultrawide and
-        // frame-rate settings all work through patches: say so, so a setting that has no effect is not a mystery (#131).
-        rt_log("Bananza resolution: this game version has no resolution patch; output stays 2880x1620 and the "
+        // The output resolution, ultrawide and frame-rate settings all work through code patches (recomp/patches-dkb100.txt
+        // for 1.0.0, recomp/patches-dkb458752.txt for update 3.2.0). A build generated without them has no such set: say
+        // so, so a setting that has no effect is not a mystery (#131).
+        rt_log("Bananza resolution: this build has no resolution patch; output stays 2880x1620 and the "
                "resolution, ultrawide and real-time settings have no effect");
         return;
     }
