@@ -206,6 +206,10 @@ NVN_API(nvnDeviceGetInteger) {
     if (w >= sizeof devinfo / sizeof *devinfo) rt_fatal("nvn: unsupported NVN device property %#x", w);
     // Update 458752's graphics initializer (main+0x5c61ac) rejects the base ABI before creating its device singleton.
     *out = w == NVN_DEVICE_INFO_API_MINOR_VERSION && !strcmp(rt_game_target, "dkb458752") ? 30 : devinfo[w];
+    // Entries the table leaves at 0 are defaults, not measured values; list each asked enum once.
+    static volatile uint32_t zero_seen[4];
+    if (!devinfo[w] && !(__atomic_fetch_or(&zero_seen[w / 32], 1u << (w % 32), __ATOMIC_RELAXED) & (1u << (w % 32))))
+        rt_log("nvn2: DeviceGetInteger %#x answered with the default 0", w);
     NVN_LOG("DeviceGetInteger %#x -> %d", w, *out);
 }
 // NVNboolean nvnDeviceRegisterFastClearColor{,i,ui}(NVNdevice *d, const T *color, NVNformat format), ...Depth(d, float):
