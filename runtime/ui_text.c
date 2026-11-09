@@ -215,6 +215,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 
     [UI_MENU_MENU_LANG] = "Menu language", [UI_MENU_MENU_LANG_DESC] = "Language of this menu and the overlay.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatic (from Windows)",
+    [UI_MENU_THEME] = "Menu theme", [UI_MENU_THEME_DK] = "Donkey Kong", [UI_MENU_THEME_CLASSIC] = "Classic",
+    [UI_MENU_THEME_DESC] = "Look of this menu: Donkey Kong (bark and banana yellow) or the classic dark green and gold.",
 
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
@@ -507,6 +509,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 
     [UI_MENU_MENU_LANG] = "Язык меню", [UI_MENU_MENU_LANG_DESC] = "Язык этого меню и индикатора.",
     [UI_MENU_MENU_LANG_AUTO] = "Автоматически (из Windows)",
+    [UI_MENU_THEME] = "Тема меню", [UI_MENU_THEME_DK] = "Donkey Kong", [UI_MENU_THEME_CLASSIC] = "Классическая",
+    [UI_MENU_THEME_DESC] = "Вид этого меню: Donkey Kong (кора и банановый жёлтый) или классический тёмно-зелёный с золотом.",
 
     [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
     [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",

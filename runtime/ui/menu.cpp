@@ -783,6 +783,8 @@ static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId themes[] = {UI_MENU_THEME_DK, UI_MENU_THEME_CLASSIC};
+    opt_choice("TOTK_MENU_THEME", UI_MENU_THEME, themes, 2, UI_MENU_THEME_DESC);
     opt_end();
 }
 
