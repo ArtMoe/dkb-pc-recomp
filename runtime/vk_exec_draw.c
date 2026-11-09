@@ -2881,7 +2881,12 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // extent is the rendered area; a run in the mining tunnel showed no stretch or border.
 // The upscaler's variants: fixed resolution (the intro: 1920x1080 or 1280x720 in) and dynamic resolution (gameplay
 // after the intro, e.g. 2095x1179 in).
-static int mvk_upscale_cs(uint64_t h) { return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full; }
+// The hashes move with the translator: the first two are from an older translator, the last two from the one of
+// 2026-11-09 (found with the log line "dlss: compute shader ... is not the game's upscaler" of upscaler = dlss).
+static int mvk_upscale_cs(uint64_t h) {
+    return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full || h == 0xb14741d70eb26339ull ||
+           h == 0xbd63ebb7ee8d50eaull;
+}
 
 // Whether the device can blit from format f with linear filtering (src) or into it (dst), optimal tiling.
 static int blit_ok(VkFormat f, int dst) {
@@ -2936,7 +2941,28 @@ static int mvk_upscale_blit(VkExec *ex, const GfxShader *cs) {
 // the caller forgets the bound state (vk_exec_draw_new_cb) after it; -1 (NGX failed after it may have bound its own):
 // the caller also binds the game's pipeline and resources again before its dispatch.
 static int dlss_upscale(VkExec *ex, const GfxShader *cs) {
-    if (!vk_dlss_wanted() || !mvk_upscale_cs(gfx_shader_spirv_fnv(cs))) return 0;
+    if (!vk_dlss_wanted()) return 0;
+    if (!mvk_upscale_cs(gfx_shader_spirv_fnv(cs))) {
+        // The upscaler is matched by hash, which a translator change moves: with DLSS on, list the compute shaders
+        // seen (the first 48 distinct) so a run that never reaches DLSS shows which hash to add.
+        static uint64_t seen[48];
+        static int nseen;
+        uint64_t h = gfx_shader_spirv_fnv(cs);
+        int i = 0;
+        while (i < nseen && seen[i] != h) i++;
+        if (i == nseen && nseen < 48) {
+            seen[nseen++] = h;
+            uint64_t ds = ex->tex[NVN_STAGE_CS][0], dd = ex->img[NVN_STAGE_CS][1];
+            view_t ws, wd;
+            int hws = 0, hwd = 0;
+            const VkTexImage *a = ds ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(ds), &ws, &hws) : NULL;
+            const VkTexImage *b = dd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(dd), &wd, &hwd) : NULL;
+            rt_log("dlss: compute shader %016llx is not the game's upscaler (tex0 %ux%u fmt %d, img1 %ux%u fmt %d)",
+                   (unsigned long long)h, a ? a->width : 0, a ? a->height : 0, a ? (int)a->format : 0,
+                   b ? b->width : 0, b ? b->height : 0, b ? (int)b->format : 0);
+        }
+        return 0;
+    }
     uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
     view_t vs, vd;
     int hvs = 0, hvd = 0;
