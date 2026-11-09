@@ -2161,15 +2161,19 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     int k = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
     if (B.pipe[k] == p) return;
     vkCmdBindPipeline(ex->cb, bp, p);
-    if (vk_ctx()->has_nv_checkpoints && vk_checkpoints_on()) {   // DKB_GPU_CHECKPOINTS=1: name the shaders the checkpoint's pipeline holds
+    int ck = vk_ctx()->has_nv_checkpoints && vk_checkpoints_on(), crumb = vk_crumb_bind_on();
+    if (ck || crumb) {   // DKB_GPU_CHECKPOINTS=1 or TOTK_CRUMB_BIND=1: name the shaders the checkpoint's pipeline holds
         uint64_t o[3] = {0};
         const uint8_t *ctl, *code;
         uint32_t len;
         static const int stages[2][3] = {{NVN_STAGE_VS, NVN_STAGE_GS, NVN_STAGE_FS}, {NVN_STAGE_CS, -1, -1}};
         for (int i = 0; i < 3 && ex->prog; i++)
             if (stages[k][i] >= 0 && find_stage(ex->prog, stages[k][i], &ctl, &code, &len)) o[i] = nvn2_origin(code);
-        vk_checkpoint_note(p, o[0], o[1], o[2]);
-        rec_checkpoint(ex->cb, p);
+        if (ck) {
+            vk_checkpoint_note(p, o[0], o[1], o[2]);
+            rec_checkpoint(ex->cb, p);
+        }
+        if (crumb) rec_crumb(ex->cb, VK_CRUMB_BIND, vk_crumb_bind_note(p, o[0], o[1], o[2]));
     }
     ex->recorded++;
     B.pipe[k] = p;
@@ -2311,12 +2315,17 @@ typedef struct {
 // that drew in all 17 logged runs. So it is matched by the name of its NVN 2 stage.
 static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     static int on = -1;
-    if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
+    if (on < 0) {
+        // 0: Bananza. TOTK_FIX_VS_FAULT=all runs the skip on every vendor, to A/B the AMD device loss against it.
+        int nv = vk_ctx()->props.vendorID == 0x10de;
+        on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && (nv || !strcasecmp(cfg_value("TOTK_FIX_VS_FAULT"), "all"));
+        if (on && !nv) rt_log("vk: TOTK_FIX_VS_FAULT=all: the light quad skip (#9) also runs on this non-NVIDIA GPU");
+    }
     if (!on || !vs || !fs) return 0;
     const uint8_t *ctl, *code = NULL;
     uint32_t len;
     if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len) && nvn2_origin(code) == 0xcae0ef8e9fe9147full) {
-        warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage cae0ef8e9fe9147f is skipped on NVIDIA (#9)");
+        warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage cae0ef8e9fe9147f is skipped (#9)");
         return 1;
     }
     const GfxShaderRes *r;
@@ -2324,7 +2333,7 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
     GfxShaderIo io[32];
     if (!lights || !(gfx_shader_inputs(vs, io) >> 9 & 1)) return 0;
-    warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped on NVIDIA (#9; TOTK_FIX_VS_FAULT=0 draws them)");
+    warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped (#9; TOTK_FIX_VS_FAULT=0 draws them)");
     return 1;
 }
 
