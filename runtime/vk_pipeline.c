@@ -1250,8 +1250,9 @@ static int screen_uv_stage(const GfxShader *src) {
 // 0, 1, 4 or 16 from two bits of the hash, so a frame dump's _tm image tells the stage apart from the others drawn in
 // the pass, and the log lists each stage with its colour.
 static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t words, uint64_t *out_n) {
-    static volatile int mode = -1;   // 0 off, 1 zero, 2 mark
+    static int mode_set = -1;   // 0 off, 1 zero, 2 mark; read and written atomically
     static volatile int32_t logged;
+    int mode = __atomic_load_n(&mode_set, __ATOMIC_RELAXED);
     if (mode < 0) {   // every racing thread computes the same value; only the first logs it
         const char *e = cfg_get("TOTK_NAN_GUARD");
         int m = !e || !strcmp(e, "1") || !strcmp(e, "zero") ? 1 : !strcmp(e, "0") || !*e ? 0 : !strcmp(e, "mark") ? 2 : 1;
@@ -1260,6 +1261,7 @@ static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t wor
                 rt_log("vk: DKB_NAN_GUARD=%s ignored, using zero (use 0, zero or mark)", e);
             rt_log("vk: NaN guard on fragment outputs: %s", m == 2 ? "mark" : m ? "zero" : "off");
         }
+        __atomic_store_n(&mode_set, m, __ATOMIC_RELAXED);
         mode = m;
     }
     if (!mode || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return NULL;

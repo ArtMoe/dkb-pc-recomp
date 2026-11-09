@@ -1804,6 +1804,7 @@ typedef struct { uint8_t iid[32]; uint64_t origin; } OriginRec;
 static OriginRec *origin_tab;            // open addressing on the first 4 bytes of the id; origin 0 marks a free slot
 static uint32_t origin_used;
 static long origin_good;                 // bytes of whole records in the file when it was loaded
+static int origin_read;                  // the file was opened and read: only then may a torn tail be overwritten
 static PlatMutex origin_lock = PLAT_MUTEX_INIT;
 static PlatOnce origin_once = PLAT_ONCE_INIT;
 
@@ -1833,6 +1834,7 @@ static void origin_load(void *param) {
     snprintf(path, sizeof path, "%s/nvn2-origins.bin", cache_dir);
     FILE *f = fopen(path, "rb");
     if (!f) return;
+    origin_read = 1;
     OriginRec r;
     uint8_t buf[40];
     while (fread(buf, 1, sizeof buf, f) == sizeof buf) {
@@ -1859,9 +1861,15 @@ static void note_origin(const GfxShader *s, const uint8_t *code) {
             tried = 1;
             char path[PATH_CAP + 32];
             snprintf(path, sizeof path, "%s/nvn2-origins.bin", cache_dir);
-            append = fopen(path, "r+b");   // not "ab": a torn tail must be overwritten, not appended after
-            if (append && fseek(append, origin_good, SEEK_SET)) fclose(append), append = NULL;
-            if (!append) append = fopen(path, "ab");
+            // Not "ab" when the file was read: a torn tail must be overwritten, not appended after. A file that could
+            // not be read (a lock, say) is only appended to, so records already in it are never overwritten, and a
+            // failed seek writes nothing rather than appending after a torn tail.
+            if (origin_read) {
+                append = fopen(path, "r+b");
+                if (append && fseek(append, origin_good, SEEK_SET)) fclose(append), append = NULL;
+            } else {
+                append = fopen(path, "ab");
+            }
         }
         if (append) {
             uint8_t buf[40];

@@ -25,7 +25,7 @@ def f32(x):
     return struct.unpack('<I', struct.pack('<f', x))[0]
 
 
-def module(stage=4, per_component=False, int_output=False, builtin=False, with_bool=True, scalar=False):
+def module(stage=4, per_component=False, int_output=False, builtin=False, with_bool=True, scalar=False, uint=False):
     """A shader that stores a vec4 to one output, whole or one component at a time. Ids are fixed; bound is 40."""
     (MAIN, OUT, VOID, FN, SCALAR, VEC, PTR, ZERO, VALUE, ENTRY, BOOL, INT, PTR1, *IDX) = range(1, 18)
     w = [0x07230203, 0x00010300, 0, 40, 0]
@@ -41,7 +41,7 @@ def module(stage=4, per_component=False, int_output=False, builtin=False, with_b
     if with_bool:
         w += instr(OP_TYPE_BOOL, BOOL)
     w += instr(21, SCALAR, 32, 1) if int_output else instr(22, SCALAR, 32)
-    w += instr(21, INT, 32, 1) if not int_output else []
+    w += instr(21, INT, 32, 0 if uint else 1) if not int_output else []   # the index type: signed, or the unsigned 32-bit int the guard reuses
     index_type = SCALAR if int_output else INT
     if builtin:
         w += instr(32, PTR, 3, SCALAR) + instr(59, PTR, OUT, 3)
@@ -153,8 +153,12 @@ int main(int argc, char **argv) {
         self.assertEqual(stores, 1)
         self.assertEqual(sum(op == OP_TYPE_BOOL for op, _ in found), 1)
 
+    def test_a_missing_uint_type_is_added(self):
+        _, found = self.run_guard('uint_added', module())   # the module only has a signed 32-bit int
+        self.assertEqual(sum(op == OP_TYPE_INT and a[1:] == [32, 0] for op, a in found), 1)
+
     def test_an_existing_uint_type_is_reused(self):
-        _, found = self.run_guard('uint', module())
+        _, found = self.run_guard('uint_reused', module(uint=True))   # one unsigned 32-bit int before and after
         self.assertEqual(sum(op == OP_TYPE_INT and a[1:] == [32, 0] for op, a in found), 1)
 
     def test_other_modules_are_refused(self):
