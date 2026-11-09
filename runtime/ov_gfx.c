@@ -6,7 +6,10 @@
 //   nn::vi::*    display, layer and native window identities; the vsync event is bound here
 //   nvnBootstrapLoader   the end of --boot (rt_boot_event "nvn"); otherwise the synthetic address of an NVN proc (nvn_procs.c)
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "ov.h"
@@ -106,17 +109,64 @@ static void ov_vsync_event(Cpu *c) {
     ret_x(c, 0);
 }
 
+// ---- DKB_HDR_TRACE=1 (cfg HDR_TRACE): logs the game's HDR and colour-space calls with their arguments and caller.
+// The host answer of each traced call is unchanged; with the key off nothing is counted or printed.
+#define HDR_TRACE_NAMES 24
+static struct { const char *name; unsigned n; } hdr_tr[HDR_TRACE_NAMES];
+
+int hdr_trace_hit(const Cpu *c, const char *name) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_HDR_TRACE");
+    if (!on) return 0;
+    unsigned n = 0;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i < HDR_TRACE_NAMES; i++) {
+        if (!hdr_tr[i].name) hdr_tr[i].name = name;
+        if (hdr_tr[i].name == name || !strcmp(hdr_tr[i].name, name)) { n = ++hdr_tr[i].n; break; }
+    }
+    plat_mutex_unlock(&lock);
+    if (n > 20 && n % 600) return 0;
+    char lr[160];
+    rt_log("hdr-trace: %s #%u from %s", name, n, ldr_describe(c->x[30], lr, sizeof lr));
+    return 1;
+}
+
+void hdr_trace_dump(const char *name, const void *p) {
+    if (!p) { rt_log("hdr-trace: %s struct null", name); return; }
+    const uint8_t *b = p;
+    char hex[64 * 3 + 1];
+    for (int i = 0; i < 64; i++) snprintf(hex + i * 3, 4, "%02x ", b[i]);
+    rt_log("hdr-trace: %s struct %p: %s", name, p, hex);
+}
+
 // ---- Switch 2 vi calls (Donkey Kong Bananza): the host presents SDR with a fixed swap interval and no VRR.
-// Result QueryDisplayHdrStatus(bool *enabled, HdrOutputFormat *format, u16 *?, const Display *): HDR off
+// DKB_HDR_NATIVE=1 (cfg HDR_NATIVE, experimental, docs/hdr-native-plan.md step 4) reports an HDR display instead, so
+// the game switches to its own HDR output: the 3.2.0 display object (main+0x203728) stores the answer, the peak caps
+// its content luminance and the paper white scales its HUD and SDR content. Off by default: the present does not yet
+// handle the HDR window texture the game then makes.
+static int hdr_native(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_HDR_NATIVE");
+    return on;
+}
+// Result QueryDisplayHdrStatus(bool *enabled, HdrOutputFormat *format, u16 *peak_nits, const Display *): HDR off, or
+// with DKB_HDR_NATIVE on and hdr_peak_nits as the display's peak. The game never reads *format; it is left alone.
 static void ov_hdr_status(Cpu *c) {
     uint8_t *on = arg_p(c, 0);
-    if (on) *on = 0;
+    uint16_t *peak = arg_p(c, 2);
+    if (hdr_trace_hit(c, "QueryDisplayHdrStatus"))
+        rt_log("hdr-trace: QueryDisplayHdrStatus args: enabled=%s format=%s x2=%s display=%s", on ? "set" : "null",
+               arg_p(c, 1) ? "set" : "null", peak ? "set" : "null", arg_p(c, 3) ? "set" : "null");
+    if (on) *on = (uint8_t)hdr_native();
+    if (peak && hdr_native()) *peak = (uint16_t)cfg_double("TOTK_HDR_PEAK_NITS");
     ret_x(c, 0);
 }
-// Result QueryDisplayHdrPaperWhite(u16 *nits, const Display *): the BT.2408 reference white, 203 nits
+// Result QueryDisplayHdrPaperWhite(u16 *nits, const Display *): the BT.2408 reference white, 203 nits, or
+// hdr_game_nits with DKB_HDR_NATIVE on
 static void ov_hdr_paper_white(Cpu *c) {
     uint16_t *nits = arg_p(c, 0);
-    if (nits) *nits = 203;
+    if (hdr_trace_hit(c, "QueryDisplayHdrPaperWhite")) rt_log("hdr-trace: QueryDisplayHdrPaperWhite nits=%s", nits ? "set" : "null");
+    if (nits) *nits = hdr_native() ? (uint16_t)cfg_double("TOTK_HDR_GAME_NITS") : 203;
     ret_x(c, 0);
 }
 // Result QueryDisplayVrrSupported(bool *out, const Display *): no
@@ -128,6 +178,15 @@ static void ov_vrr_supported(Cpu *c) {
 // Result SetDisplayVrrCapability(Display *, bool), Set/ClearLayerExtendedSwapInterval(Layer *[, int, int]),
 // SetLayerNextHdr{Extended,Standard}ContentLuminanceRangeMetadata(Layer *, u16, u16): accepted, nothing changes
 static void ov_vi_accept(Cpu *c) { ret_x(c, 0); }
+// The four SetLayerNextHdr* calls: accepted like ov_vi_accept, with their integer arguments traced (x1, x2)
+static void hdr_next_trace(Cpu *c, const char *name) {
+    if (hdr_trace_hit(c, name)) rt_log("hdr-trace: %s args: x1=%llu x2=%llu", name, (unsigned long long)arg_x(c, 1), (unsigned long long)arg_x(c, 2));
+    ret_x(c, 0);
+}
+static void ov_hdr_ext_lum(Cpu *c) { hdr_next_trace(c, "SetLayerNextHdrExtendedContentLuminanceRangeMetadata"); }
+static void ov_hdr_std_lum(Cpu *c) { hdr_next_trace(c, "SetLayerNextHdrStandardContentLuminanceRangeMetadata"); }
+static void ov_hdr_gamut(Cpu *c) { hdr_next_trace(c, "SetLayerNextHdrContentGamutMetadata"); }
+static void ov_hdr_tonemap(Cpu *c) { hdr_next_trace(c, "SetLayerNextHdrToSdrToneMappingMetadata"); }
 
 HOST_OVERRIDE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", ov_hdr_status);
 HOST_OVERRIDE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", ov_hdr_paper_white);
@@ -135,10 +194,10 @@ HOST_OVERRIDE("_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE", ov_vrr_su
 HOST_OVERRIDE("_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", ov_vi_accept);
-HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_hdr_ext_lum);
+HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_hdr_std_lum);
+HOST_OVERRIDE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", ov_hdr_gamut);
+HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", ov_hdr_tonemap);
 
 // void *nvnBootstrapLoader(const char *name): the first NVN call
 static void ov_nvn_bootstrap(Cpu *c) {

@@ -615,6 +615,13 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     if (plat_cas32(&g_closed, 0, 0)) return;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
+    {   // the window texture's format, logged when it changes: the game picks an HDR one in its HDR mode (DKB_HDR_NATIVE)
+        static int last_fmt = -1, last_w, last_h;
+        if ((int)fmt != last_fmt || w != last_w || h != last_h) {
+            rt_log("present: window texture VkFormat %d, %dx%d", (int)fmt, w, h);
+            last_fmt = (int)fmt, last_w = w, last_h = h;
+        }
+    }
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
@@ -685,10 +692,15 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     uint64_t crumb = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     vk_crumb(cb, VK_CRUMB_PRESENT, crumb);
     VkImage dst = g_sc_img[idx];
+    // Native HDR (DKB_HDR_NATIVE, experimental): in its HDR mode the game writes Rec. 2020 PQ code values into an
+    // A2B10G10R10 window texture, which is what an HDR10 swapchain takes, so the picture is blitted to it as it is.
+    // Colour adjustment, FSR and SMAA are skipped: they expect a display-referred SDR picture, and PQ is not one.
+    int native_hdr = g_sc_hdr && fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
     // HDR10 (vk_hdr.c): the chain below (blit or FSR, SMAA) works on an 8-bit sRGB image, hdr_img, and the HDR pass
-    // writes dst from it; hdr_img is dst itself on an SDR swapchain
-    VkImage hdr_img = g_sc_hdr && g_sc_view[idx] ? vk_hdr_mid(cb, g_sc_ext.width, g_sc_ext.height) : VK_NULL_HANDLE;
-    if (g_sc_hdr && !hdr_img) hdr_fallback();   // this frame goes out unconverted; the next swapchain is SDR
+    // writes dst from it; hdr_img is dst itself on an SDR swapchain and with native HDR
+    VkImage hdr_img = g_sc_hdr && !native_hdr && g_sc_view[idx] ? vk_hdr_mid(cb, g_sc_ext.width, g_sc_ext.height)
+                                                                 : VK_NULL_HANDLE;
+    if (g_sc_hdr && !native_hdr && !hdr_img) hdr_fallback();   // this frame goes out unconverted; the next swapchain is SDR
     VkImage tgt = hdr_img ? hdr_img : dst;
     if (!hdr_img)
         sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
@@ -705,13 +717,13 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
     // Colour adjustment (TOTK_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
-    VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
+    VkImage graded = general && !native_hdr ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
     const int grect[4] = {0, 0, cw, ch};
     VkImage psrc = graded ? graded : src;
     VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
     const int *prect = graded ? grect : rect;
     // FSR (TOTK_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
-    int fsr = general && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, tgt, to);
+    int fsr = general && !native_hdr && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, tgt, to);
     g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];
     if (!fsr) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
@@ -728,7 +740,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     }
     // SMAA (TOTK_SMAA, vk_smaa.c) on the scaled picture, before the menu overlay; it leaves the image in TRANSFER_DST
-    vk_smaa_record(cb, tgt, to);
+    if (!native_hdr) vk_smaa_record(cb, tgt, to);
     // last: dst's layout, and the stage and access of its last write, as each step leaves it
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
