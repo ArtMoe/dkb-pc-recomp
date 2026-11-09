@@ -39,7 +39,9 @@ typedef struct VkCtx {
         has_address_binding_report,         // VK_EXT_device_address_binding_report enabled (with the checkpoints, vk_crumbs.c)
         has_pipeline_exec_info,             // VK_KHR_pipeline_executable_properties enabled (with the checkpoints, vk_crumbs.c)
         debug_utils,                       // VK_EXT_debug_utils enabled on the instance (validation or the checkpoints)
-        has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
+        has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
+        has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_swapchain_colorspace;           // VK_EXT_swapchain_colorspace enabled on the instance (HDR10 formats)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -140,6 +142,21 @@ void vk_smaa_release(void);   // before the device goes away
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 void vk_color_release(void);   // before the device goes away
+// HDR output (vk_hdr.c). vk_hdr_wanted: hdr, read once. vk_hdr_surface_format: the HDR10 surface format when wanted
+// and offered (1). vk_hdr_mid: the RGBA8 image the present chain (blit or FSR, SMAA) writes in place of the HDR10
+// swapchain image, in TRANSFER_DST_OPTIMAL; vk_hdr_record: the HDR pass from it onto the swapchain image (1; 0: nothing
+// recorded). vk_hdr_ui_target / vk_hdr_ui_compose: the in-game menu's RGBA8 target, then blended onto the swapchain
+// image. vk_hdr_to_srgb8: 10-bit PQ pixels to sRGB bytes.
+int vk_hdr_wanted(void);
+void vk_hdr_off(void);   // probes that read back 8-bit swapchain pixels, or a failed HDR setup: SDR whatever the setting
+int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceFormatKHR *out);
+void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc);
+VkImage vk_hdr_mid(VkCommandBuffer cb, uint32_t w, uint32_t h);
+int vk_hdr_record(VkCommandBuffer cb, VkImage dst, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
+VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
+void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
+void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
+void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
