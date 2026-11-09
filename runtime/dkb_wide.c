@@ -20,7 +20,13 @@ void dkb_wide_init(void) {
     wide_output[0] = 2880;
     wide_output[1] = 1620;
     int set = rt_patch_set("dkbwide");
-    if (set < 0) return;
+    if (set < 0) {
+        // Update 3.2.0 carries no code patches (recomp/patches-dkb458752.txt), and the output resolution, ultrawide and
+        // frame-rate settings all work through patches: say so, so a setting that has no effect is not a mystery (#131).
+        rt_log("Bananza resolution: this game version has no resolution patch; output stays 2880x1620 and the "
+               "resolution, ultrawide and real-time settings have no effect");
+        return;
+    }
     rt_patch_switch(set, 0);
     int allow_wide = cfg_bool("TOTK_ULTRAWIDE");
     unsigned width = 0, height = 0;

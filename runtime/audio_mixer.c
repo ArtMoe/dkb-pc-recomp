@@ -179,6 +179,13 @@ static void output_open(Mixer *m, int rate) {
         rt_log("audio: SDL audio init failed (%s): mixing without sound", SDL_GetError());
         return;
     }
+#if defined(__linux__) && defined(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES)
+    // PipeWire gave a 1024-frame period, and with it the renderer works in bursts of four or five 240-frame blocks and
+    // the output clicked at every block edge (issue #133: static on all sound; 240 frames, or 768 through PulseAudio,
+    // measured clean). Ask for one block per period unless the player's SDL_AUDIO_DEVICE_SAMPLE_FRAMES says otherwise
+    // (the default priority loses to the environment variable). A guess about the cause; the measured fix is the period.
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "240", SDL_HINT_DEFAULT);
+#endif
     SDL_AudioSpec spec = {SDL_AUDIO_F32, 2, rate};
     m->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, sdl_pull, m);
     if (!m->stream) {
