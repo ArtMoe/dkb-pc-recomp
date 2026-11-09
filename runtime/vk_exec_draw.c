@@ -2000,6 +2000,9 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         if (i1 > lo[s] && !info->tpl[s]) need_w = 1;
     }
     uint32_t nd = 0;
+    typedef struct { const GfxShaderRes *r; VkDescSlot *o; int st, img; uint32_t cnt; } TexPend;
+    static TexPend tp[MAX_BINDINGS]; // replay thread only, like w and d
+    int ntp = 0;
     for (uint32_t i = 0; i < info->n_bindings; i++) {
         const VkPipeBinding *b = &info->bindings[i];
         const GfxShaderRes *r = b->res;
@@ -2040,16 +2043,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                 }
             } else {
                 kind = 1;
-                vk_texture_lock();   // tex_info looks up with the texture lock held
-                for (uint32_t k = 0; k < cnt; k++) {
-                    int slot = r->slot + (int)k;
-                    uint64_t h = 0;
-                    if (img) h = slot >= 0 && slot < 32 ? ex->img[st][slot] : 0;
-                    else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
-                    tex_info(ex, r, h, img, r->separate, &o[k].image);
-                    o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
-                }
-                vk_texture_unlock();
+                tp[ntp++] = (TexPend){r, o, st, img, cnt};   // filled below under one texture lock
             }
         } else {
             rt_fatal("vk: binding %u has an unknown kind %d", (unsigned)b->binding, (int)b->kind);
@@ -2062,6 +2056,21 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             else w[i].pTexelBufferView = &bv[nd];
         }
         nd += cnt;
+    }
+    if (ntp) {
+        vk_texture_lock();   // tex_info looks up with the texture lock held: once for the draw's texture bindings
+        for (int t = 0; t < ntp; t++) {
+            const TexPend *q = &tp[t];
+            for (uint32_t k = 0; k < q->cnt; k++) {
+                int slot = q->r->slot + (int)k;
+                uint64_t h = 0;
+                if (q->img) h = slot >= 0 && slot < 32 ? ex->img[q->st][slot] : 0;
+                else h = slot >= 0 && slot < 128 ? ex->tex[q->st][slot] : 0;
+                tex_info(ex, q->r, h, q->img, q->r->separate, &q->o[k].image);
+                q->o[k].w[2] = (uint32_t)q->o[k].image.imageLayout;   // zero the tail padding
+            }
+        }
+        vk_texture_unlock();
     }
     // Set 1's first descriptor is noted when the loop reaches its first binding. A set 1 without bindings (a fragment
     // stage with no resources) starts at the end instead, so set 0's byte count (d0[1] - d0[0]) covers its descriptors.
@@ -2226,6 +2235,11 @@ static void bind_vertex_buffers(VkExec *ex) {
     // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
     uint64_t gen = vk_mem_gen();
     int same_gen = B.vb_valid && B.vgen == gen;
+    if (same_gen && !memcmp(B.vin, ex->vbuf, sizeof B.vin)) {   // no range changed: the loop below would rebuild B.vb..B.vstr
+        int same_str = 1;
+        for (int b = 0; b < 16 && !dyn; b++) same_str &= B.vstr[b] == ex->pipe.vstream[b].stride;
+        if (same_str) return;
+    }
     for (int b = 0; b < 17; b++) {
         vb[b] = Z.zbuf, vo[b] = 0, vsz[b] = ZERO_BYTES, vstr[b] = b < 16 ? ex->pipe.vstream[b].stride : 0;
         if (b == VK_PIPE_ZERO_BINDING) continue;
