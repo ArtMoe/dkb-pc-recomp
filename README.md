@@ -29,7 +29,7 @@ hand-played run reached the Ingot Isle Cave-In section. It still
 can crash (on NVIDIA two light quads are skipped to avoid a GPU fault,
 [#9](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/9)), and
 many effects are missing.
-The [first release (v0.1.0)](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries an installer that
+The [latest release](https://github.com/Lucas-blip-png/dkb-pc-recomp/releases/latest) carries an installer that
 builds the game from your own dump: [docs/installer.md](docs/installer.md).
 Progress, day by day: [docs/devlog.md](docs/devlog.md).
 
