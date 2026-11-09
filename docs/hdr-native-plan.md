@@ -1,6 +1,6 @@
 # Native HDR10: assessment and plan
 
-Status: steps 1 to 4 done, a first cut of step 7, route B next. Started 2026-11-09 against `bananza` at `9ea44ad`, game 3.2.0 (`dkb458752`).
+Status: steps 1 to 4 done, a first cut of step 7, route B in the runtime (`hdr_range`) and measured in play. Started 2026-11-09 against `bananza` at `9ea44ad`, game 3.2.0 (`dkb458752`).
 
 "Native HDR" here means the picture's highlights come from the game's own high-range scene, not from stretching the
 finished 8-bit picture. Today's `hdr = 1` (`runtime/vk_hdr.c`, `runtime/shaders/hdr_encode.frag`) is the second kind:
@@ -137,6 +137,48 @@ composite shader: keep its LUT grade for the SDR part and extend the curve above
 (e.g. scale the graded colour by the ratio of an extended curve to `1 - exp(-x)` on luminance). The final pass needs
 no change. `DKB_SPV_OVERRIDE` (`vk_pipeline.c` `spv_override`) can carry a prototype before a proper rewrite in the
 runtime.
+
+## Route B: why the game's curve stops at 1.36, and the prototype
+
+The composite's uniform block (`DKB_DUMP_UBO=1`) holds, in HDR mode, `c[4] = {4.92611, 0.65, 0.75, 0.5}`: the
+ceiling M is exactly peak / paper white (1000 / 203), the knee k 0.65, the shoulder power p 0.75 and a chroma
+exponent 0.5; `c[5].x` is 203. The SDR variant (another shader) has `c[4].x = 2.21675` (450 / 203).
+
+After the LUT the shader computes the luminance `Ys = 1 - exp(-L)` and, above k, the shoulder
+`Y = k + (1 - k) r t / (1 + (r - 1)(1 - t)^p)` with `t = (Ys - k) / (1 - k)` and `r = (M - k) / (1 - k)`, which runs
+from k at the knee to M at `Ys = 1`. But L comes from a per-channel logistic stage, `(1 / (1 + exp((c1.w - x) c1.z)) -
+e0) n`, which never exceeds `(1 - e0) n = 2.54` with the dumped `c[1].z = 1`, `c[1].w = 0.5`. So Ys never exceeds
+`1 - exp(-2.54) = 0.921`, and the shoulder never exceeds 1.357, whatever M is. That is the 273-nit ceiling measured.
+
+Prototype (`DKB_SPV_OVERRIDE` of the final module `5ea7515d96755e19`, files under `build/hdr-proto/`, which stay
+there because they are derived from the game's shader): the same shoulder, run from k to that real maximum `top =
+1 - exp(-(1 - e0) n)` instead of to 1.0, and only the output luminance replaced; the chroma blend keeps the game's own
+luminance. Below the knee nothing changes. Predicted against the game: scene 1 -> 128 nits in both, 3 -> 340 (game 239),
+6 -> 811 (274), 10 and up -> about 1000 (276).
+
+Measured in play (mining tunnel, `hdr-routeb.bat`, the override's log line present): maximum 975 nits (273 without
+it); median, p90 and p99.9 unchanged (3, 15 and 202 nits). Only 0.04% of that frame is above paper white, the
+highlights at the tunnel's end, so brighter scenes still need a look.
+
+## Route B in the runtime
+
+The edited shader cannot go into the repository (it is decompiled from the game), so `spirv_hdr_shoulder.c` makes the
+same change to the game's own SPIR-V when the module is created (`vk_pipeline.c` `hdr_shoulder`, before the NaN guard),
+with `hdr_native = 1` and `hdr_range = full`, the default; `hdr_range = console` keeps the game's curve.
+
+- It finds the composite by structure: three colour output components stored as `FMin(FMax(0, FMul(x, Load Y)),
+  U[m][4].x)` for one Function variable Y and one uniform block U, and `Load Ys >= U[m][4].y`. It computes `top` from
+  `c[1].z` and `c[1].w`, so it depends on no variable ids.
+- Offline (a harness over the 213 distinct fragment modules in the dumps): it matches the gameplay composite
+  (`f57691dc0f0288e1`, origin `fa8531841679c4de`) and the title screen's variant without the LUT (`7c69d0df5393f00c`,
+  origin `cc63f1aa1b6efbeb`), nothing else; the output passes `spirv-val`, and decompiled it is the prototype's code.
+- In play (the same mining tunnel, `hdr_range` full against console in two runs): 975 against 273 nits at the
+  maximum, median, p90 and p99.9 the same (3, 15, 202). No validation errors, no shader failures.
+- On the title screen the two are identical: the game's exposure there (`c[0].x = 0.5`) keeps the scene below the knee.
+
+Still open: brighter scenes (outdoors, the sun) and a person's judgement on an HDR display; 1.0.0, whose composite
+should match by the same structure but has not been run; the HUD, which the game draws into the scene image after the
+composite at its own level (about paper white), so it is not affected.
 
 ## Two routes
 

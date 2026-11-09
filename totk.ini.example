@@ -180,6 +180,12 @@
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
+# Bananza only, experimental, read at start: with hdr = 1, hdr_native = 1 lets the game make its own HDR10 picture
+# (the console's HDR mode) instead of lifting the SDR one; hdr_peak_nits and hdr_game_nits are what it is told the
+# display has. hdr_range = full takes its highlights up to hdr_peak_nits; console keeps the game's own curve, which
+# stops at about 1.36 times hdr_game_nits. FSR, SMAA and the colour adjustment are off with hdr_native.
+# hdr_native = 0
+# hdr_range = full
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
