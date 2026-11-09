@@ -483,7 +483,7 @@ static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 10
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
-    if (cfg_bool("TOTK_FULLSCREEN")) opt_disable_next(UI_MENU_WINDOWED_ONLY);
+    if (gfx_cfg_fullscreen()) opt_disable_next(UI_MENU_WINDOWED_ONLY);
     int sz[MAX_SIZES][2], n = 0, mw = 0, mh = 0, cw = 0, ch = 0;
     int have = gfx_window_monitor_size(&mw, &mh);
     int cur_ok = sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &cw, &ch) == 2;
@@ -691,9 +691,19 @@ static void rows_color(void) {
     }
 }
 
+// TOTK_FULLSCREEN follows the row, so the older key and the profiles that set it stay true to the window.
+static void row_window_mode(void) {
+    static const char *const vals[] = {"windowed", "borderless", "fullscreen"};
+    const char *names[] = {menu_text(UI_MENU_WINDOW_MODE_WINDOWED), menu_text(UI_MENU_WINDOW_MODE_BORDERLESS),
+                           menu_text(UI_MENU_WINDOW_MODE_FULLSCREEN)};
+    if (opt_choice_list("TOTK_WINDOW_MODE", UI_MENU_WINDOW_MODE, vals, names, 3, UI_MENU_WINDOW_MODE_DESC,
+                        gfx_cfg_window_mode()))
+        cfg_set("TOTK_FULLSCREEN", gfx_cfg_window_mode() ? "1" : "0");   // the save is already scheduled
+}
+
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
-    opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+    row_window_mode();
     row_output_res();
     if (!rt_game_version) rows_dkb_wide();
     else row_window_size();

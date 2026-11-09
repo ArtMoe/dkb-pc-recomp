@@ -36,6 +36,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_VERSION] = "DKB Recomp %s, game %s",
 
     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Fills the screen with the game; F11 toggles it.",
+    [UI_MENU_WINDOW_MODE] = "Window mode",
+    [UI_MENU_WINDOW_MODE_DESC] = "Windowed, borderless over the screen, or fullscreen; F11 switches between windowed and the last full-screen mode.",
+    [UI_MENU_WINDOW_MODE_WINDOWED] = "Windowed", [UI_MENU_WINDOW_MODE_BORDERLESS] = "Borderless",
+    [UI_MENU_WINDOW_MODE_FULLSCREEN] = "Fullscreen",
     [UI_MENU_WINDOW_SIZE] = "Window size", [UI_MENU_WINDOW_SIZE_DESC] = "Size of the game window when not fullscreen.",
     [UI_MENU_WINDOW_SIZE_CUSTOM] = "Custom",
     [UI_MENU_WINDOWED_ONLY] = "Only available in windowed mode",
@@ -319,6 +323,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_VERSION] = "DKB Recomp %s, игра %s",
 
     [UI_MENU_FULLSCREEN] = "Полный экран", [UI_MENU_FULLSCREEN_DESC] = "Игра на весь экран; F11 переключает режим.",
+    [UI_MENU_WINDOW_MODE] = "Режим окна",
+    [UI_MENU_WINDOW_MODE_DESC] = "Оконный, без рамки или полный экран; F11 переключает между окном и последним полноэкранным режимом.",
+    [UI_MENU_WINDOW_MODE_WINDOWED] = "В окне", [UI_MENU_WINDOW_MODE_BORDERLESS] = "Без рамки",
+    [UI_MENU_WINDOW_MODE_FULLSCREEN] = "Полный экран",
     [UI_MENU_WINDOW_SIZE] = "Размер окна", [UI_MENU_WINDOW_SIZE_DESC] = "Размер окна игры вне полноэкранного режима.",
     [UI_MENU_WINDOW_SIZE_CUSTOM] = "Другой",
     [UI_MENU_WINDOWED_ONLY] = "Доступно только в оконном режиме",

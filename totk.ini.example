@@ -116,6 +116,9 @@
 # not apply: at 150% scale, 1920x1080 covers the area 1280x720 covers at 100%. F11 switches fullscreen and saves it
 # here. Changes while the game runs take effect at once.
 # window_size = 1920x1080
+# windowed, borderless (over the screen) or fullscreen (the display's own mode with SDL windows; on Windows, borderless
+# kept above every other window). Wins over fullscreen below when both are set.
+# window_mode = windowed
 # fullscreen = 0
 # 1, the default: the game keeps running while you are in another window; the keyboard stays quiet until the window is
 # in front again. 0: it pauses when its window loses focus, as it does on the Switch when Home is pressed; a load
