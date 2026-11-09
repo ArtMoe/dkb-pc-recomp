@@ -208,6 +208,7 @@
  "dkb.translator_mismatch": "The translator is missing its matching identity or was built from different sources. Build it from this checkout or let setup build it with .NET 10.",
  "dkb.dotnet_missing": "Building the translator needs the .NET 10 SDK. Pass --dotnet to a portable SDK, or --translator to a matching prebuilt translator.",
  "dkb.jobs": "The worker limit must be at least 1.",
+ "dkb.temp_space": "The temporary folder {path} has a space in its path, and so does the system temporary folder, which breaks the .NET native build. Pass --temp with a path that has no spaces.",
  "dkb.busy": "Another setup is already using {path}. Wait for it to finish or cancel it first.",
  "dkb.space": "Setup needs about {need} GiB free for the installed data and temporary build files.",
  "dkb.tool_failed": "The {step} step failed with exit code {code}. Details: {log}.",

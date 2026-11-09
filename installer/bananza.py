@@ -15,6 +15,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -313,6 +314,8 @@ def preflight(layout, options, dest, temp, rep):
             ours = False
         if not ours:
             raise InstallError('dkb.dest_unrelated', path=str(dest))
+    if nuget_needs_fallback(temp) and any(c.isspace() for c in tempfile.gettempdir()):
+        raise InstallError('dkb.temp_space', path=str(temp))
     owner = {'game': game, 'destination': str(dest), 'temporary': str(temp)}
     for p in (temp / OWNER, dest / STATE, dest / (STATE + '.tmp'), dest / DEST_OWNER):
         ensure_plain(p)
@@ -409,9 +412,18 @@ def copy_file(src, dst):
     ensure_plain(temporary)
     try:
         shutil.copyfile(src, temporary)
+        try:
+            shutil.copymode(src, temporary)  # keeps the executable bit
+        except OSError:
+            pass
         os.replace(temporary, dst)
     except PermissionError:
         raise InstallError('compile.exe_in_use', path=str(dst)) from None
+
+
+def nuget_needs_fallback(temp):
+    """NativeAOT hands its native libraries to clang unquoted on POSIX, so NuGet must live where no path has a space."""
+    return os.name != 'nt' and any(c.isspace() for c in str(temp / 'nuget'))
 
 
 def lock_temp(temp):
@@ -596,9 +608,10 @@ class Translator(Step):
         source = ctx.info['translator']
         if source is None:
             out = ctx.temp / 'xlate'
+            nuget = Path(tempfile.mkdtemp(prefix='dkb-nuget-')) if nuget_needs_fallback(ctx.temp) else ctx.temp / 'nuget'
             env = {'PATH': str(ctx.info['dotnet'].parent) + os.pathsep + os.environ.get('PATH', ''),
                    'DOTNET_ROOT': str(ctx.info['dotnet'].parent), 'DOTNET_CLI_HOME': str(ctx.temp / 'dotnet-home'),
-                   'NUGET_PACKAGES': str(ctx.temp / 'nuget'),
+                   'NUGET_PACKAGES': str(nuget),
                    'DOTNET_PROCESSOR_COUNT': str(ctx.options.jobs),
                    # Reusable MSBuild nodes retain NuGet task DLLs after publish and block Windows cleanup.
                    # These settings affect only this build, not the owner's other .NET work.
@@ -609,7 +622,11 @@ class Translator(Step):
                 command += ['--llvm', ctx.layout.llvm]
                 if ctx.layout.sysroot:
                     command += ['--sysroot', ctx.layout.sysroot]
-            run_tool(ctx, self.id, command, env)
+            try:
+                run_tool(ctx, self.id, command, env)
+            finally:
+                if nuget.parent != ctx.temp:
+                    shutil.rmtree(nuget, ignore_errors=True)
             source = out / ('totk_xlate' + EXE)
         if source.with_suffix('.id').read_text(encoding='ascii').strip() != ctx.info['identity']:
             raise InstallError('dkb.translator_mismatch')
