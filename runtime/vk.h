@@ -34,6 +34,7 @@ typedef struct VkCtx {
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
+        has_list_restart,                   // primitiveTopologyListRestart: restart applies to list draws too (vk_exec_draw.c)
         has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints enabled (DKB_GPU_CHECKPOINTS=1)
         has_address_binding_report,         // VK_EXT_device_address_binding_report enabled (with the checkpoints, vk_crumbs.c)
         has_pipeline_exec_info,             // VK_KHR_pipeline_executable_properties enabled (with the checkpoints, vk_crumbs.c)
@@ -556,6 +557,8 @@ VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle l
                                                           // rewrites those draws; polygon -> fan
 int vk_geometry_supported(void);                   // 1: the device has geometryShader (MoltenVK does not)
 uint8_t vk_geometry_input(uint32_t nvn_primitive);    // GFX_GEOMETRY_*; 0 for unsupported/emulated input primitives
+// TOTK_DUMP=key (vk_dump.c): F9 in the game window dumps the frame after next; the window calls this on the key.
+void vk_dump_request(void);
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void);  // after the first vk_pipeline_* call
 // Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (TOTK_DESC_TEMPLATE=0,
