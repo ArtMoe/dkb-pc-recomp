@@ -73,10 +73,12 @@ static void step_store(float seconds) {
 }
 
 static void frame_limit_live(void);
+static int no_table;   // this game version has no realtime patch table in this build
 
 void frame_step_init(void) {
     int fps60 = rt_patch_set("fps60"), realtime = rt_patch_set("realtime"), cloth = rt_patch_set("cloth");
     if (realtime < 0) {
+        no_table = 1;
         rt_log("frame rate: no timing patch table; using the game's original frame timing");
         return;
     }
@@ -138,6 +140,8 @@ static void frame_limit_live(void) {
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
     if ((hz > 60 || hz == 0) && !step_word)
         rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
+    else if (hz && hz < 60 && no_table && !rt_game_version)
+        rt_log("frame rate: this game version has no real-time frame-rate support in this build; limit %d fps cannot be held", hz);
     else if (hz && hz < 60 && !step_word && !rt_game_version)
         // Bananza's own controller picks the present interval and the pacer follows it, so a lower limit is not held
         // without the real-time step (issue #118: a 30 fps limit still ran at 60).
