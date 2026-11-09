@@ -205,6 +205,8 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   finish screen with Open folder. English or Russian, chosen from the Windows display language, switchable in the
   window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `totk-install.json` needs only the
   folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
+  The look follows the in-game menu (bark browns, banana yellow, cream text, red and green accents) as a ttk theme on
+  clam with a drawn banana-bunch header; no game art or fonts. Text colours keep at least 4.5:1 on their background.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
