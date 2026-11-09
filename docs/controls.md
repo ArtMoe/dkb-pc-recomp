@@ -53,7 +53,7 @@ Without the folder (an install made by an older setup, or one where the setup co
 
 | Key | Gamepad | Action |
 |---|---|---|
-| F1 or Esc | Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
+| F1 or Esc | Guide (Xbox, PS) button, or Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
 | F10 | L3 + R3 (both stick clicks) | performance overlay: off, frame rate, full panel |
 | F11 | | windowed, or back to the last full-screen mode (`window_mode`), saved to `totk.ini` |
 
