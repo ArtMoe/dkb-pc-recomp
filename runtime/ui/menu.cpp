@@ -572,13 +572,15 @@ static void rows_dkb_wide(void) {
 }
 
 static void row_render_scale(void) {
-    static const char *const vals[] = {"game", "50", "67", "75", "100", "125", "150", "200"};
+    static const char *const vals[] = {"game", "50", "59", "67", "75", "77", "100", "125", "150", "200"};
+    // AMD's FSR 1 quality modes; they are brand names, so they stay untranslated
+    static const char *const fsr[] = {"", " (Performance)", " (Balanced)", " (Quality)", "", " (Ultra quality)"};
     enum { N = sizeof vals / sizeof *vals };
-    char shown[N][32];
+    char shown[N][40];
     const char *names[N];
     names[0] = menu_text(UI_MENU_RENDER_SCALE_GAME);
     for (int i = 1; i < N; i++) {
-        snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
+        snprintf(shown[i], sizeof shown[i], "%s %%%s", vals[i], i < 6 ? fsr[i] : "");
         names[i] = shown[i];
     }
     opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC);
