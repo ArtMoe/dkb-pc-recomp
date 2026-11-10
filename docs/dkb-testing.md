@@ -176,7 +176,8 @@ and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 di
 
 5120x1440 (32:9) and 3840x2160 used to fail during render-resource creation because the game's
 render-target pool is a fixed 200 MiB; a patch grows it with the output size. Both now run on 1.0.0
-on an RTX 5060 Ti (short runs). Update 3.2.0 and other GPUs are untested.
+on an RTX 5060 Ti (short runs); 3840x2160 also runs on update 3.2.0 (pools of 356 MiB, 90 s at 60 fps).
+5120x1440 on 3.2.0 and other GPUs are untested.
 
 Run the layout, projection/register-preservation, and configuration checks with:
 
