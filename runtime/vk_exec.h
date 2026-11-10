@@ -8,6 +8,7 @@
 #pragma once
 #include <stdint.h>
 
+#include "gfx_c0.h"
 #include "nvn_api.h"
 #include "vk.h"
 
@@ -185,7 +186,7 @@ void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump fr
 
 // c0, the NVN driver constant bank of one stage (vk_exec_draw.c; TOTK_FIX_C0=0 binds zeros instead): bank is
 // VK_C0_BYTES, stage an NVN stage (0 vertex, 1 fragment, 5 compute), ssbo and ubo the 16 bound slots of that stage.
-#define VK_C0_BYTES NVN2_C0_BYTES
+#define VK_C0_BYTES GFX_C0_BYTES
 void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16], const p_bind_buf ubo[16],
                 const uint32_t dispatch[3], uint32_t base_instance);
 
