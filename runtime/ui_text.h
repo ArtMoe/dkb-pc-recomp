@@ -178,6 +178,7 @@ typedef enum {
     UI_MENU_OV_FMT_SIZE,      // "%ux%u"
     UI_MENU_OV_FMT_SCENE,     // "%ux%u, %.0f%%": the scene and its share of the game image's width
     UI_MENU_OV_FMT_UPSCALE,   // "%ux%u -> %ux%u": the game's upscaler input and output (Bananza)
+    UI_MENU_OV_NO_UPSCALER,   // Bananza: the game ran no upscaler lately (its dynamic resolution reached the full size)
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
     UI_MENU_LAST_ID = UI_MENU_OV_SCALE_BILINEAR,

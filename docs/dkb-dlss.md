@@ -44,7 +44,7 @@ DLSS writes into the image the game's upscaler writes, so its output size is the
 window's or `output_res`. On a 2560x1440 virtual display (`output_res`) the game makes that image 1706x960, two
 thirds of it on each side (issue #152, update 3.2.0, `dlss: Quality 1138x640 -> 1706x960`); at the default 2880x1620
 that is 1920x1080. The frame is stretched from there to the window as with the game's upscaler, so DLSS looks soft
-when the window is much larger than that image. `render_scale` is a TotK setting and does nothing here (its menu row is hidden on Bananza); the HUD's "3D scene" line and `dkb.log` (`upscaler: WxH -> WxH`) report the game's own upscaler input and output sizes instead. A larger DLSS
+when the window is much larger than that image. `render_scale` is a TotK setting and does nothing here (its menu row is hidden on Bananza); the HUD's "3D scene" line and `dkb.log` (`upscaler: WxH -> WxH`) report the game's own upscaler input and output sizes instead. The game scales its 3D resolution dynamically and runs the upscaler only while that is below the output size; once it reaches the full size (easy at 1080p on a fast GPU) the line reads "no upscaler" and DLSS has nothing to upscale. A larger DLSS
 output would need the passes after the upscaler to read a bigger image; that is not done.
 
 `dkb.log` gets a `dlss:` summary at the first frame and every 1800 frames: how many frames had depth and motion

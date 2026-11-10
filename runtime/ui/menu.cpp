@@ -1238,7 +1238,7 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     char v[6][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
-    if (!have) snprintf(v[2], sizeof v[2], "%s", menu_text(UI_MENU_OV_NONE));   // Bananza, no upscaler dispatch lately
+    if (!have) snprintf(v[2], sizeof v[2], "%s", menu_text(UI_MENU_OV_NO_UPSCALER));   // Bananza, no upscaler dispatch lately
     else if (!rt_game_version)
         snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_UPSCALE), scene[0], scene[1], out[0], out[1]);
     else snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
