@@ -1,4 +1,5 @@
-// Bananza's HDR highlights brought up to the display's peak (vk_pipeline.c make_module_linked, hdr_range = full).
+// Bananza's HDR highlights brought up to the display's peak (vk_pipeline.c make_module_linked; DKB_HDR_SHOULDER=0
+// turns it off).
 //
 // In its HDR mode (DKB_HDR_NATIVE, ov_gfx.c) the game's composite fragment stage tonemaps the scene in two steps. A
 // per-channel logistic curve, (1 / (1 + exp((c1.w - x) * c1.z)) - e0) * n with e0 = 1 / (1 + exp(c1.w * c1.z)) and
@@ -26,8 +27,8 @@
 #include "spirv_hdr_shoulder.h"
 
 enum {
-    OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_ENTRY_POINT = 15, OP_TYPE_BOOL = 20, OP_TYPE_INT = 21,
-    OP_TYPE_FLOAT = 22, OP_TYPE_POINTER = 32, OP_CONSTANT = 43, OP_FUNCTION = 54, OP_VARIABLE = 59, OP_LOAD = 61,
+    OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_ENTRY_POINT = 15, OP_TYPE_BOOL = 20, OP_TYPE_FLOAT = 22,
+    OP_CONSTANT = 43, OP_FUNCTION = 54, OP_VARIABLE = 59, OP_LOAD = 61,
     OP_STORE = 62, OP_ACCESS_CHAIN = 65, OP_FNEGATE = 127, OP_FADD = 129, OP_FSUB = 131, OP_FMUL = 133, OP_FDIV = 136,
     OP_LOGICAL_AND = 167, OP_SELECT = 169, OP_FORD_GREATER_THAN = 186, OP_FORD_GREATER_THAN_EQUAL = 190,
     OP_FUNORD_GREATER_THAN_EQUAL = 191, OP_LABEL = 248,
@@ -165,7 +166,7 @@ uint32_t *spirv_hdr_shoulder(const uint32_t *w, uint64_t n, uint64_t *out_n) {
                     !loads_uniform(&m, fmin[6], 4, 0, &u, &member, &row4, &comp0, &ptr_type))
                     goto next;
                 const uint32_t *mul = def_of(&m, fmax[6], OP_FMUL);
-                if (!mul || fmax[5] >= bound || !m.is_const[fmax[5]] || m.const_val[fmax[5]] != 0) goto next;
+                if (!mul || mul[1] != f32 || fmax[5] >= bound || !m.is_const[fmax[5]] || m.const_val[fmax[5]] != 0) goto next;
                 uint32_t v = loaded_fn_var(&m, mul[4]);
                 if (!v || (yvar && v != yvar) || mul_at[c]) goto next;
                 yvar = v, mul_at[c] = mul - w;
@@ -175,12 +176,13 @@ uint32_t *spirv_hdr_shoulder(const uint32_t *w, uint64_t n, uint64_t *out_n) {
         i += len;
     }
     if (!mul_at[0] || !mul_at[1] || !mul_at[2]) goto done;
+    uint64_t cmp_at = 0;
     for (uint64_t i = fn_at; i < n && !ysvar;) {   // Load Ys >= Load U[member][4].y
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         const uint32_t *a = w + i + 1;
         if ((op == OP_FORD_GREATER_THAN_EQUAL || op == OP_FUNORD_GREATER_THAN_EQUAL) && len == 5 &&
             loads_uniform(&m, a[3], 4, 1, &u, &member, NULL, NULL, &ptr_type))
-            ysvar = loaded_fn_var(&m, a[2]);
+            ysvar = loaded_fn_var(&m, a[2]), cmp_at = i;
         i += len;
     }
     if (!ysvar || ysvar == yvar) goto done;
@@ -191,6 +193,15 @@ uint32_t *spirv_hdr_shoulder(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     }
     for (uint64_t i = first; i < last; i += w[i] >> 16)   // one block, so the new value is defined for all three
         if ((w[i] & 0xffff) == OP_LABEL) goto done;
+    // The new code loads Ys and Y again at the first FMul. That is the Ys the knee comparison read only if nothing
+    // stores to it in between, and the Y all three FMul read only if nothing stores to Y among them. Another
+    // translator or game version that reuses the register would otherwise get a plausible but wrong curve; it is
+    // left alone instead.
+    if (cmp_at >= first) goto done;
+    for (uint64_t i = cmp_at; i < last; i += w[i] >> 16)
+        if ((w[i] & 0xffff) == OP_STORE && (w[i] >> 16) >= 3 &&
+            (w[i + 1] == ysvar || (i >= first && w[i + 1] == yvar)))
+            goto done;
     uint32_t int_t = 0;   // the index constants' type, for the new ones
     for (uint64_t i = 5; i < fn_at; i += w[i] >> 16)
         if ((w[i] & 0xffff) == OP_CONSTANT && w[i + 2] == row4) int_t = w[i + 1];

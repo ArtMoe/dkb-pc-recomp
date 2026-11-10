@@ -1,6 +1,6 @@
 # Native HDR10: assessment and plan
 
-Status: steps 1 to 4 done, a first cut of step 7, route B in the runtime (`hdr_range`) and measured in play. Started 2026-11-09 against `bananza` at `9ea44ad`, game 3.2.0 (`dkb458752`).
+Status: route A (the game's own HDR mode) and the highlight rewrite (`spirv_hdr_shoulder.c`) are in the runtime, measured in play and checked by eye on one HDR TV (2026-11-10). Started 2026-11-09 against `bananza` at `9ea44ad`, game 3.2.0 (`dkb458752`).
 
 "Native HDR" here means the picture's highlights come from the game's own high-range scene, not from stretching the
 finished 8-bit picture. Today's `hdr = 1` (`runtime/vk_hdr.c`, `runtime/shaders/hdr_encode.frag`) is the second kind:
@@ -8,8 +8,8 @@ an inverse tonemap of the SDR window texture.
 
 ## Finding: the game has its own HDR output path
 
-The reply on the HDR request said the build has no HDR output path. A check of the 3.2.0 modules says otherwise. The
-host tells the game that HDR is off, and the game then never uses that path.
+It was assumed that the build has no HDR output path. A check of the 3.2.0 modules says otherwise. The host told the
+game that HDR is off, and the game then never used that path.
 
 Verified by scanning the symbol names in the decompressed `main` NSO:
 
@@ -112,10 +112,13 @@ Experiment (`DKB_HDR_NATIVE=1`: `enabled = 1`, peak = `hdr_peak_nits`, paper whi
 
 First cut of step 7 (`gfx_present.c` `present_image`): when the swapchain is HDR10 and the window texture is
 A2B10G10R10, the picture is blitted to the swapchain as it is, without the inverse tonemap, colour adjustment, FSR or
-SMAA. Without an HDR10 swapchain (`hdr = 0`) the PQ picture still goes to an SDR swapchain and looks dim and flat.
+SMAA. The game is told HDR is on only while the swapchain is HDR10 (`gfx_window_hdr10`), and it polls the answer
+every frame: with `hdr = 0`, without an HDR10 surface format or after a fallback to SDR (Windows HDR switched off, a
+swapchain format without `BLIT_DST`) it goes back to its SDR picture instead of sending PQ to an SDR swapchain.
+`hdr_native` needs `hdr = 1` and game 3.2.0; on 1.0.0 it stays off, because 1.0.0's HDR mode has never been run.
 
 Fixed on the way: `HDR_TRACE` had no row in `cfg.c`'s settings table, so a run without the variable set stopped at
-start (`cfg: TOTK_HDR_TRACE has no row in the settings table`).
+start (`cfg: TOTK_HDR_TRACE has no row in the settings table`), and later none in its section table.
 
 ## Gameplay result: the game's HDR mode keeps its SDR tonemap
 
@@ -156,7 +159,7 @@ there because they are derived from the game's shader): the same shoulder, run f
 luminance. Below the knee nothing changes. Predicted against the game: scene 1 -> 128 nits in both, 3 -> 340 (game 239),
 6 -> 811 (274), 10 and up -> about 1000 (276).
 
-Measured in play (mining tunnel, `hdr-routeb.bat`, the override's log line present): maximum 975 nits (273 without
+Measured in play (mining tunnel, `DKB_HDR_NATIVE=1` with the override set, its log line present): maximum 975 nits (273 without
 it); median, p90 and p99.9 unchanged (3, 15 and 202 nits). Only 0.04% of that frame is above paper white, the
 highlights at the tunnel's end, so brighter scenes still need a look.
 
@@ -164,7 +167,7 @@ highlights at the tunnel's end, so brighter scenes still need a look.
 
 The edited shader cannot go into the repository (it is decompiled from the game), so `spirv_hdr_shoulder.c` makes the
 same change to the game's own SPIR-V when the module is created (`vk_pipeline.c` `hdr_shoulder`, before the NaN guard),
-with `hdr_native = 1` and `hdr_range = full`, the default; `hdr_range = console` keeps the game's curve.
+whenever `hdr_native = 1`; the diagnostic `DKB_HDR_SHOULDER=0` keeps the game's curve (a user setting for that, `hdr_range = console`, was dropped: nobody would choose the 1.36x ceiling).
 
 - It finds the composite by structure: three colour output components stored as `FMin(FMax(0, FMul(x, Load Y)),
   U[m][4].x)` for one Function variable Y and one uniform block U, and `Load Ys >= U[m][4].y`. It computes `top` from
@@ -172,12 +175,32 @@ with `hdr_native = 1` and `hdr_range = full`, the default; `hdr_range = console`
 - Offline (a harness over the 213 distinct fragment modules in the dumps): it matches the gameplay composite
   (`f57691dc0f0288e1`, origin `fa8531841679c4de`) and the title screen's variant without the LUT (`7c69d0df5393f00c`,
   origin `cc63f1aa1b6efbeb`), nothing else; the output passes `spirv-val`, and decompiled it is the prototype's code.
-- In play (the same mining tunnel, `hdr_range` full against console in two runs): 975 against 273 nits at the
+- In play (the same mining tunnel, the rewrite against the game's curve in two runs): 975 against 273 nits at the
   maximum, median, p90 and p99.9 the same (3, 15, 202). No validation errors, no shader failures.
 - On the title screen the two are identical: the game's exposure there (`c[0].x = 0.5`) keeps the scene below the knee.
 
+It refuses a module in which the knee comparison's Ys could differ from the one it loads again (a store to Ys between
+the two) or Y could change among the three FMul, so another translator or game version is left as it is rather than
+rewritten wrongly. `tests/hdr_shoulder_spirv_test.py` checks the match, the refusals and that the output passes
+`spirv-val` and the NaN guard.
+
+## Measured with the trace (3.2.0, `hdr_peak_nits = 4000`)
+
+- The game takes the lower of the display's peak and its own limit for the mode (`+0x1d6 = min(+0x1d0, +0x1d2)`):
+  it sends `SetLayerNextHdrExtendedContentLuminanceRangeMetadata(layer, 0, 1400)` and the composite's
+  `c[4].x = 6.897` (1400 / 203). A higher `hdr_peak_nits` changes nothing in the picture.
+- The display was told `hdr_peak_nits` (4000) as MaxCLL and mastering peak, for a picture that stops at 1400, so a
+  display that tone-maps by the metadata compressed highlights it could have shown. `vk_hdr.c` `vk_hdr_metadata` now
+  sends the game's own peak with native HDR (`ov_gfx.c` `hdr_game_content_peak`).
+- One gameplay frame (F9 dump, decoded as Rec. 2020 PQ from the 8-bit dump of the window texture): maximum 1299 nits,
+  median 35, p90 150, p99.9 842; 6% of the frame above paper white, 0.14% above 800; no pixel pinned at the peak;
+  frame-average light level 89 nits; next to nothing more than 15% outside Rec. 709. A third and a fourth composite variant
+  matched the rewrite in play: `4951bdb9c94d40a2` (origin `147ab1f597568b2d`) and `5264abb433fb715c` (origin `2c058fbf1c3c1bdc`). `tools/hdr_frame_stats.py` computes these numbers from a dump.
+- Raising the game's own limit is not attempted: it is the grade the game ships, few displays show more than
+  1400 nits, and a display above it tone-maps nothing away.
+
 Still open: brighter scenes (outdoors, the sun) and a person's judgement on an HDR display; 1.0.0, whose composite
-should match by the same structure but has not been run; the HUD, which the game draws into the scene image after the
+should match by the same structure but has not been run (`hdr_native` is off there); the HUD, which the game draws into the scene image after the
 composite at its own level (about paper white), so it is not affected.
 
 ## Two routes
@@ -213,8 +236,8 @@ Route B: medium to large, two to three times route A, with a maintenance cost pe
 
 ## Steps
 
-Every step keeps `hdr = 0` and today's `hdr = 1` unchanged. The new mode gets its own setting value (suggested:
-`hdr = native`, read at start) until it has been verified on a display.
+Every step keeps `hdr = 0` and today's `hdr = 1` unchanged. The new mode is its own setting, `hdr_native = 1` with
+`hdr = 1` (read at start), off by default until it has been verified on a display.
 
 | # | Step | Done when |
 |---|---|---|
@@ -224,11 +247,11 @@ Every step keeps `hdr = 0` and today's `hdr = 1` unchanged. The new mode gets it
 | 4 | Experiment: behind an env variable, answer `QueryDisplayHdrStatus` with "on" and the format from step 2. Run with `TOTK_DUMP=key` and `DKB_DUMP_SPV=1`. Read the dump: the window texture's format, the new passes, the arguments of the metadata calls. No presentation work yet; a wrong-looking picture is expected. | Go or no-go for route A, with the dump's pass list and the formats recorded here. On no-go, skip to step 10. |
 | 5 | Fix what step 4 broke: HDR shader variants that fail to lower or translate, formats `vk_formats.c` lacks. One fix per bug, each with the translator's own checks (`tools/xlate_smoke.py`, `--probe-shader`). | The game runs in HDR mode without new log errors and the dumped passes look sane. |
 | 6 | Window state: keep the colour space and both metadata structs on the NVN window (`nvn_api_nvn2.c`, `nvn_obj.h`) and make the Get procs return them. Carry the colour space with the presented texture to `gfx_present.c`. | `--probe-nvn-tex` and the selftest pass; a new probe case sets and reads the values back. |
-| 7 | Present variant in `vk_hdr.c` and `gfx_present.c`: when the window texture is already HDR10, it must not go through the 8-bit `vk_hdr_mid` image. Decide where FSR, SMAA and `vk_color.c` grading run (they need a display-referred, roughly perceptual signal; PQ is close, linear is not) and write the shader that takes the result to the swapchain's PQ. The in-game menu keeps `hdr_ui.frag`. | With `hdr = native` the swapchain shows the game's HDR frame; with FSR and SMAA on and off. |
+| 7 | Present variant in `vk_hdr.c` and `gfx_present.c`: when the window texture is already HDR10, it must not go through the 8-bit `vk_hdr_mid` image. Decide where FSR, SMAA and `vk_color.c` grading run (they need a display-referred, roughly perceptual signal; PQ is close, linear is not) and write the shader that takes the result to the swapchain's PQ. The in-game menu keeps `hdr_ui.frag`. | With `hdr_native = 1` the swapchain shows the game's HDR frame; with FSR and SMAA on and off. |
 | 8 | Settings: map `hdr_game_nits` to the answer of `QueryDisplayHdrPaperWhite`, pass the display's peak to the game where step 2 found a place for it, send the game's content metadata to `vkSetHdrMetadataEXT`. Add the setting to `cfg.c`, the menu (`runtime/ui/menu.cpp`) and `totk.ini.example`. | Changing the nits in the menu changes the picture; the metadata in the log matches the game's. |
 | 9 | Checks without an HDR display: a script that reads a dumped PQ frame and reports the nits histogram, the peak and the share of pixels above paper white, for the same scene in SDR, inverse-tonemap and native mode. Then the fallbacks: no HDR10 surface format, Windows HDR switched off while running, `--shot` and the probes (`boot.c`, `vk_exec_probe.c` read 8-bit pixels), movies (`ov_movie.c`), 1.0.0 as well as 3.2.0, Linux. | The script's numbers show highlights above paper white in native mode only; every fallback ends in SDR with one log line. |
 | 10 | Route B, only after a no-go in step 4: find the tonemap pass with `TOTK_DUMP`, match it by SPIR-V hash, redirect its input to a tonemapper of ours and compose the HUD apart. Write its own plan first. | A separate plan in this file. |
-| 11 | Docs: `docs/architecture.md` (the HDR entry), `totk.ini.example`, `docs/dkb-testing.md`, the devlog, and a corrected reply on the HDR request. Ask a tester with an HDR display for a photo and the `hdr:` log lines. | The docs describe both modes and which one is native. |
+| 11 | Docs: `docs/architecture.md` (the HDR entry), `totk.ini.example`, `docs/dkb-testing.md` and the devlog. Ask a tester with an HDR display for a photo and the `hdr:` log lines. | The docs describe both modes and which one is native. |
 
 Order and gates: 1, 2 and 3 are independent and can run in parallel. Step 4 is the decision point; do not start 6 to
 8 before it says go. Step 5 has no bound, so report after each bug instead of batching.

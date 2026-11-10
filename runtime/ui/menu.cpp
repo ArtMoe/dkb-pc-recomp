@@ -49,6 +49,7 @@ void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
+extern const char rt_game_target[];   // build target: dkb100, dkb458752 or a TotK one
 // fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
 int romfs_xbox_prompts_ready(void);
 int romfs_xbox_prompts_active(void);
@@ -727,6 +728,8 @@ static void tab_screen(float scale) {
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);
     opt_toggle("TOTK_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
+    // native HDR is in effect on 3.2.0 only (ov_gfx.c hdr_native_on), so the row is shown only there
+    if (!strcmp(rt_game_target, "dkb458752")) opt_toggle("TOTK_HDR_NATIVE", UI_MENU_HDR_NATIVE, UI_MENU_HDR_NATIVE_DESC);
     opt_slider("TOTK_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f");
     opt_slider("TOTK_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f");
     opt_slider("TOTK_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f");

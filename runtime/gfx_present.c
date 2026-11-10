@@ -146,7 +146,7 @@ double gfx_window_refresh_hz(void) { return plat_cas32(&g_rate_mhz, 0, 0) / 1000
 static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
-static int g_sc_hdr;                        // HDR10 (hdr, vk_hdr.c): PQ code values in Rec. 2020
+static int g_sc_hdr;                        // HDR10 (hdr, vk_hdr.c): PQ code values in Rec. 2020; stored atomically
 static VkExtent2D g_sc_ext;
 static int g_scaler;                        // the last present: 0 the game image 1:1, 1 scaled by the blit, 2 by FSR
 static uint32_t g_sc_n;
@@ -393,7 +393,7 @@ static int build_swapchain(void) {
     if (old) vkDestroySwapchainKHR(c->device, old, NULL);
     if (g_sc_hdr && !hdr) vk_hdr_release();   // the HDR passes' images; the device is idle here
     g_sc_fmt = sf.format;
-    g_sc_hdr = hdr;
+    __atomic_store_n(&g_sc_hdr, hdr, __ATOMIC_RELEASE);   // gfx_window_hdr10 reads it from guest threads
     if (hdr) vk_hdr_metadata(g_sc, 1);
     g_sc_ext = ext;
     g_sc_n = MAX_IMAGES;
@@ -410,6 +410,9 @@ static int build_swapchain(void) {
     vk_queue_unlock();
     return 1;
 }
+
+// Whether the swapchain is HDR10 at the moment (any thread): ov_gfx.c tells the game HDR is on only then (native HDR)
+int gfx_window_hdr10(void) { return __atomic_load_n(&g_sc_hdr, __ATOMIC_ACQUIRE); }
 
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held. The stale mark
 // goes before the surface is read: a resize during the build keeps it. The switch to fullscreen at start lands there
@@ -615,7 +618,7 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     if (plat_cas32(&g_closed, 0, 0)) return;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
-    {   // the window texture's format, logged when it changes: the game picks an HDR one in its HDR mode (DKB_HDR_NATIVE)
+    if (hdr_trace_on()) {   // DKB_HDR_TRACE: the window texture's format when it changes (HDR10 in the game's HDR mode)
         static int last_fmt = -1, last_w, last_h;
         if ((int)fmt != last_fmt || w != last_w || h != last_h) {
             rt_log("present: window texture VkFormat %d, %dx%d", (int)fmt, w, h);
@@ -692,10 +695,21 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     uint64_t crumb = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     vk_crumb(cb, VK_CRUMB_PRESENT, crumb);
     VkImage dst = g_sc_img[idx];
-    // Native HDR (DKB_HDR_NATIVE, experimental): in its HDR mode the game writes Rec. 2020 PQ code values into an
-    // A2B10G10R10 window texture, which is what an HDR10 swapchain takes, so the picture is blitted to it as it is.
-    // Colour adjustment, FSR and SMAA are skipped: they expect a display-referred SDR picture, and PQ is not one.
-    int native_hdr = g_sc_hdr && fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    // Native HDR (DKB_HDR_NATIVE, ov_gfx.c hdr_native_on): in its HDR mode the game writes Rec. 2020 PQ
+    // code values into an A2B10G10R10 window texture, which is what an HDR10 swapchain takes, so the picture is blitted
+    // to it as it is. Colour adjustment, FSR and SMAA are skipped: they expect a display-referred SDR picture, and PQ is
+    // not one. The format alone does not say PQ (TotK presents through here too), hence the setting. The blit needs
+    // BLIT_DST on the swapchain's format, which Vulkan does not require of A2R10G10B10; without it the output falls back
+    // to SDR, the game is told so (gfx_window_hdr10) and switches back to its SDR picture.
+    int native_hdr = g_sc_hdr && hdr_native_on() && fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    if (native_hdr && !(sfp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+        static int logged;
+        if (!logged) rt_log("hdr: swapchain format %d has no BLIT_DST for the game's HDR10 picture; falling back to SDR",
+                            (int)g_sc_fmt);
+        logged = 1;
+        native_hdr = 0;
+        hdr_fallback();
+    }
     // HDR10 (vk_hdr.c): the chain below (blit or FSR, SMAA) works on an 8-bit sRGB image, hdr_img, and the HDR pass
     // writes dst from it; hdr_img is dst itself on an SDR swapchain and with native HDR
     VkImage hdr_img = g_sc_hdr && !native_hdr && g_sc_view[idx] ? vk_hdr_mid(cb, g_sc_ext.width, g_sc_ext.height)

@@ -1244,12 +1244,15 @@ static int screen_uv_stage(const GfxShader *src) {
     return 0;
 }
 
-// Native HDR with hdr_range = full (spirv_hdr_shoulder.c): Bananza's HDR composite takes its highlights up to the
-// display's peak instead of stopping at about 1.36 times paper white. The stage is found by its structure, so the
-// variants with and without the grading LUT both get it; it runs before the NaN guard, whose selects it does not know.
+// Native HDR (spirv_hdr_shoulder.c): Bananza's HDR composite takes its highlights up to the display's peak instead of
+// stopping at about 1.36 times paper white. The stage is found by its structure, so the variants with and without the
+// grading LUT both get it; it runs before the NaN guard, whose selects it does not know. DKB_HDR_SHOULDER=0 keeps the
+// game's curve, for a comparison or when a variant comes out wrong.
+// Only with native HDR in effect (ov_gfx.c hdr_native_on: 3.2.0, hdr = 1). The game runs this stage only while it is
+// told HDR is on, so a module made before a fallback to SDR is not used on the SDR swapchain.
 static uint32_t *hdr_shoulder(const GfxShader *src, const uint32_t *w, uint64_t words, uint64_t *out_n) {
     static int on = -1;   // racing threads compute the same value
-    if (on < 0) on = cfg_bool("TOTK_HDR_NATIVE") && !strcmp(cfg_value("TOTK_HDR_RANGE"), "full");
+    if (on < 0) on = hdr_native_on() && cfg_bool("TOTK_HDR_SHOULDER");
     if (!on || !src || gfx_shader_stage(src) != GFX_STAGE_FS) return NULL;
     uint32_t *o = spirv_hdr_shoulder(w, words, out_n);
     if (o)
