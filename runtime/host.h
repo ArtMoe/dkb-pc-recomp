@@ -265,8 +265,12 @@ void res_heapdef_served(void);                             // romfs.c serves the
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 void dkb_wide_init(void);                                  // Bananza-only virtual display and camera patch values
 int dkb_wide_output(unsigned out[2]);                      // active mode; optional output gets its size or the stock size
-void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
-                                                           // until res_init switched the sets on)
+int res_sizes(unsigned out[2], unsigned scene[2]);         // the output and scene sizes in effect (the game's own
+                                                           // until res_init switched the sets on). Bananza: the game's
+                                                           // upscaler output and input; 0 (both zero) when none ran
+                                                           // in the last 120 presents
+void res_note_upscaler(unsigned in_w, unsigned in_h, unsigned out_w, unsigned out_h);   // Bananza: a dispatch of the
+                                                           // game's upscaler (vk_exec_draw.c op_dispatch)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for

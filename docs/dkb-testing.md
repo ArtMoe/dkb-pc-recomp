@@ -186,6 +186,8 @@ python tests/dkb_wide_projection_test.py
 python tests/dkb_wide_projection_test.py --table recomp/patches-dkb458752.txt
 clang -O2 -march=x86-64-v3 -I runtime tests/dkb_wide_test.c -o build/dkb-wide-test.exe
 build/dkb-wide-test.exe
+clang -O2 -I runtime tests/res_upscaler_test.c -o build/res-upscaler-test.exe
+build/res-upscaler-test.exe
 build/ultrawide/dkb.exe --probe-cfg
 ```
 
