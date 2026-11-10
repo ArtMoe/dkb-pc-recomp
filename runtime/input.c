@@ -66,20 +66,23 @@ static int script_mixed;             // the script has timed lines: its untimed 
 static int script_done;              // the summary line is out: no event can land any more
 static int wait_armed = -1;          // the wait line being waited for, -1 none
 // "wait file": the name each file open is matched against (NULL while no such wait is armed), and whether one matched.
-static const char *volatile wait_file;
+// input_file_opened runs on the game's file-open thread, wait_met and script_apply on the input thread: the pointer is
+// published with release and read with acquire.
+static const char *wait_file;
 static volatile int32_t wait_file_hit;
 
 void input_file_opened(const char *path) {
-    const char *want = wait_file;
+    const char *want = __atomic_load_n(&wait_file, __ATOMIC_ACQUIRE);
     if (want && path && strstr(path, want)) plat_xchg32(&wait_file_hit, 1);
 }
 
-// Whether wait line i's condition holds now. The first call for a line arms it: a file opened before does not count.
+// Whether wait line i's condition holds now. The first call for a line arms it: a file opened before does not count
+// (the hit is cleared before the name is published, so only an open that sees the name can set it).
 static int wait_met(const ScriptEv *e, int i, int64_t w) {
     if (wait_armed != i) {
         wait_armed = i;
         plat_xchg32(&wait_file_hit, 0);
-        wait_file = e->wait == SCRIPT_WAIT_FILE ? e->arg : NULL;
+        __atomic_store_n(&wait_file, e->wait == SCRIPT_WAIT_FILE ? e->arg : NULL, __ATOMIC_RELEASE);
     }
     return e->wait == SCRIPT_WAIT_WORLD ? w >= 0 : e->wait == SCRIPT_WAIT_FILE && wait_file_hit;
 }
@@ -158,7 +161,7 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
         if (e->wait) {
             int r = e->logged ? 0 : script_wait(script_ev, i, tick, w, wait_met(e, i, w));
             if (!r) continue;
-            wait_file = NULL;
+            __atomic_store_n(&wait_file, NULL, __ATOMIC_RELEASE);
             // In ms on its clock; the difference is the shift the lines after it get (later in this run: positive).
             double unit = e->timed ? 1e-3 : 1000.0 / 60, at = e->at * unit, got = e->landed * unit;
             if (e->timed && !e->off_w && !e->landed)   // held before the world clock: nothing to shift by
@@ -187,6 +190,17 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     script_done = 1;
     rt_log("input: script done at frame %llu: %d of %d events landed, latest %llu ticks and %.1f ms after the time asked",
            (unsigned long long)fr, s.landed, s.total, (unsigned long long)s.max_late_ticks, s.max_late_ms);
+    if (s.waits) rt_log("input: script waits: %d, %d of them timed out", s.waits, s.timeouts);
+}
+
+// Exit path (boot.c): the run ended before every event landed, so the done line never came. Logs once.
+void input_script_report(void) {
+    if (script_state != 1 || !script_n || script_done) return;
+    script_done = 1;
+    uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    ScriptSummary s = script_summary(script_ev, script_n, frame_step_ticks(), frame_step_world_us(), script_mixed);
+    rt_log("input: script ended at frame %llu: %d of %d events landed, %d pending", (unsigned long long)fr, s.landed,
+           s.total, s.pending);
     if (s.waits) rt_log("input: script waits: %d, %d of them timed out", s.waits, s.timeouts);
 }
 
