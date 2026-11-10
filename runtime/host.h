@@ -325,6 +325,8 @@ typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; 
                                                            // frames: --frames N (0 = no limit); shot: --shot
                                                            // PATH; gpu: TOTK_GPU
 const RtConfig *rt_config(void);
+// 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
+void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
 void rt_boot(void);                                        // boot.c
 // Modes of totk.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the

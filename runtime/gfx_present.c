@@ -77,6 +77,10 @@ void gfx_exit_release(void) {
         for (;;) plat_sleep_ms(1000);
     // A hung GPU or driver present must not keep the process alive: end it after a grace period regardless.
     plat_thread_spawn(exit_watchdog, NULL, "exitwd", 0);
+    gfx_backend()->exit_release();
+}
+
+void vk_present_exit_release(void) {
     vk_present_drain();
     plat_rmutex_lock(&g_start_lock);   // gfx_window_start sets g_started before it takes g_pl; same order as there
     gfx_window_release_vk();
@@ -88,7 +92,7 @@ void gfx_exit_release(void) {
 static void exit_main(void *arg) {
     (void)arg;
     fs_save_flush();
-    vk_pipeline_save();
+    gfx_backend()->save();
     prof_write();   // plat_exit runs no atexit handlers
     gfx_exit_release();
     plat_exit(0);
@@ -101,7 +105,7 @@ void gfx_window_closed(void) {
     if (!plat_thread_spawn(exit_main, NULL, "exit", 0)) {
         // No thread to run the full exit on: save and end the process inline, as before the release step existed.
         fs_save_flush();
-        vk_pipeline_save();
+        gfx_backend()->save();
         prof_write();
         plat_exit(0);
     }

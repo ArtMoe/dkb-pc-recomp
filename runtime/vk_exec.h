@@ -8,6 +8,7 @@
 #pragma once
 #include <stdint.h>
 
+#include "gfx.h"
 #include "gfx_c0.h"
 #include "nvn_api.h"
 #include "vk.h"
@@ -157,13 +158,9 @@ void vk_dlss_scene_draw(const VkExec *ex);
 void vk_dlss_jitter(VkImage depth, float j[2]);
 void vk_dlss_image_gone(VkImage image);
 
-// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
-typedef struct {
-    uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
-    uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
-                                                               // their pass, in-pass barriers, pass restarts, layout
-                                                               // transitions
-} VkExecFrame;
+// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log). The
+// struct is the back end's (gfx.h GfxExecFrame), since the flight recorder reads it through GfxBackend.exec_frame.
+typedef GfxExecFrame VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0

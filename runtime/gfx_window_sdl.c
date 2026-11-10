@@ -186,7 +186,7 @@ static void handle(const SDL_Event *e) {
     menu_sdl_event(e);
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
-        if (e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) vk_dump_request();   // TOTK_DUMP=key
+        if (e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) gfx_backend()->dump_request();   // TOTK_DUMP=key
         if (e->key.scancode == SDL_SCANCODE_F11 && !e->key.repeat) {
             // the real window decides, so a mode forced by the environment cannot stick F11
             int cur = is_fullscreen() ? (g_applied_mode ? g_applied_mode : 1) : 0, mode = cur ? 0 : last_fs;
