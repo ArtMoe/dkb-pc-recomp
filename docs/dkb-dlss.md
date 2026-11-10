@@ -40,6 +40,13 @@ DLSS only runs where the game runs its own upscaler. When the game draws the sce
 replays on 1.0.0 with a 1920x1080 output it switched to that partway through the play, at a different point in each
 run), there is no upscaler dispatch to replace and the game's picture is shown as it is.
 
+DLSS writes into the image the game's upscaler writes, so its output size is the game's own 3D resolution, not the
+window's or `output_res`. On a 2560x1440 virtual display (`output_res`) the game makes that image 1706x960, two
+thirds of it on each side (issue #152, update 3.2.0, `dlss: Quality 1138x640 -> 1706x960`); at the default 2880x1620
+that is 1920x1080. The frame is stretched from there to the window as with the game's upscaler, so DLSS looks soft
+when the window is much larger than that image. `render_scale` is a TotK setting and does nothing here. A larger DLSS
+output would need the passes after the upscaler to read a bigger image; that is not done.
+
 `dkb.log` gets a `dlss:` summary at the first frame and every 1800 frames: how many frames had depth and motion
 vectors, how many ran spatially, and how many started a new history.
 
