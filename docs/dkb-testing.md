@@ -174,9 +174,9 @@ and `DKB_HUD_POSITION=edges|centered`. Overrides lock the corresponding F1 contr
 otherwise choices are saved in `dkb.ini` (an existing `totk.ini` is copied to it on the first run; `TOTK_*` environment variables still work, and `DKB_*` ones win over them). Turning Ultrawide off allows the 16:9 presets
 and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 dimensions.
 
-5120x1440 (32:9) and 3840x2160 failed during render-resource creation and are excluded
-from the menu. Diagnostic overrides can accept larger sizes but do not establish support.
-Coverage remains limited to short Windows/NVIDIA runs; other scenes and GPUs need testing.
+5120x1440 (32:9) and 3840x2160 used to fail during render-resource creation because the game's
+render-target pool is a fixed 200 MiB; a patch grows it with the output size. Both now run on 1.0.0
+on an RTX 5060 Ti (short runs). Update 3.2.0 and other GPUs are untested.
 
 Run the layout, projection/register-preservation, and configuration checks with:
 

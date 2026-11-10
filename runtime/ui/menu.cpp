@@ -538,10 +538,11 @@ static void row_output_res(void) {
 // ratios; switching it keeps the nearest render height, preferring the monitor's
 // aspect when widening. Window dimensions do not change the render resolution.
 static void rows_dkb_wide(void) {
-    // 5120x1440 and 3840x2160 fail during game render-resource creation. Keep
-    // presets within the largest tested frame (3440x1440) until that is fixed.
-    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620"};
-    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1080"};
+    // The game's fixed 200 MiB render-target pool is grown by the dkbwide patch
+    // (runtime/dkb_wide.c dkb_wide_pool_bytes), so these sizes work on 1.0.0; tested on
+    // one NVIDIA GPU. 3.2.0 has the same patch ported but is untested.
+    static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620", "3840x2160"};
+    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1080", "5120x1440"};
     bool enabled = cfg_bool("TOTK_ULTRAWIDE");
     const char *const *sizes = enabled ? wide : standard;
     int count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;

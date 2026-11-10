@@ -20,7 +20,7 @@ encoded for the site's address. The patch page is the first 4 KiB page after mai
 of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents. Words in use, by byte offset:
 +0..15 the frame-rate step (runtime/frame_rate.c), +16..55 the output, swapchain and scene sizes
 (runtime/resolution.c res_init), +56..59 the camera's aspect ratio (runtime/resolution.c res_init, set aspect), +60..63
-the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +0x100..0x10f the Bananza display
+the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +0x100..0x113 the Bananza display
 size and aspect (runtime/dkb_wide.c), +0x200..0x24f the five Bananza mouse-camera host dispatch slots
 (runtime/dkb_camera.c), and +0x250..0x25f the Bananza 3.2.0 radial blur lifetime slot (runtime/frame_rate.c
 blur_frames). A new set takes words outside these.
