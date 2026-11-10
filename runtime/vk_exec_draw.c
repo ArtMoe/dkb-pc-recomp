@@ -136,6 +136,7 @@ static struct {
     VkDescriptorSetLayout ds_last_layout[2];
     int ds_pushed[2];                    // set number holds the push of DS.psig under ds_layout
     int res_valid;                       // the graphics sets bound hold what the inputs in RS give (bind_resources)
+    float jit[2];                        // the DLSS jitter the recorded viewport carries (vk_dlss_jitter)
 } B;
 
 // Contents of B.ds_last: the set's packed descriptors (VkDescSlot), which with its layout determine every write. A draw
@@ -685,6 +686,7 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 
 void vk_exec_image_gone(VkImage image) {
     vk_exec_bc_gone(image);
+    vk_dlss_image_gone(image);
     if (!views_by_image.klen) return;
     for (ViewNode *n = nvn_hm_del(&views_by_image, &image), *next; n; n = next) {
         next = n->next;
@@ -2191,12 +2193,19 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
 
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
+    // upscaler = dlss: the scene's draws are moved by DLSS's sub-pixel jitter (vk_dlss.c); a change of it, entering or
+    // leaving the scene's passes included, records the viewport again.
+    float j[2] = {0, 0};
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_jitter(ex->depth.image, j);
+    if (j[0] != B.jit[0] || j[1] != B.jit[1]) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
         if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
         if (w < 1) w = 1;
         if (h < 1) h = 1;
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+        if (j[0] != 0 || j[1] != 0) v.x += j[0], v.y += j[1];
+        B.jit[0] = j[0], B.jit[1] = j[1];
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
     }
@@ -2680,6 +2689,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
     }
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_scene_draw(ex);   // before the jitter in record_fixed
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
@@ -3001,7 +3011,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 0;
     int blit = mvk_upscale_blit(ex, cs);
     int dlss = blit ? 0 : dlss_upscale(ex, cs);
-    if (dlss) vk_exec_draw_new_cb();   // NGX left its own pipeline and descriptors bound
+    if (dlss) vk_exec_draw_new_cb(), ex->dirty = VK_EXEC_DIRTY_ALL;   // NGX left its own pipeline, descriptors and state
     if (dlss < 0) {                    // it failed: the game's upscaler runs on its own binds again
         bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
         twin_dispatch = 1;

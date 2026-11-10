@@ -116,13 +116,13 @@ Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
 - DLSS and temporal upscalers (checked 2026-11-09). The game does not use DLSS: with `nvnDlssNetworkInitialize`
   answering success it still called no `nvnDlss*` proc in a 330 s run on 1.0.0, and a scan of the guest code finds
   no reference to the DLSS slots of the NVN proc table in 1.0.0 or in 3.2.0 (the loader alone names them). Nor do the
-  frame dumps show a velocity target or a history texture, so the game has no temporal AA to borrow from. A host-side
-  DLSS, DLAA or FSR 3 upscaler would have to invent all its inputs, as TotK Recomp's `vk_dlaa.c` does (a sub-pixel
-  jitter added to the scene viewports, camera-only motion vectors from the depth buffer and the view-projection
-  constants). That needs the depth target and the constant-buffer layout found first, and camera-only vectors
-  ghost on animated characters. Frame generation has the same input needs. Until someone wants that work, the
-  options without it are the existing FSR 1 and SMAA passes, and the drivers' own frame generation (NVIDIA Smooth
-  Motion, AMD AFMF), which needs nothing from this project.
+  frame dumps show a velocity target or a history texture, so the game has no temporal AA to borrow from.
+  `upscaler = dlss` (docs/dkb-dlss.md) therefore makes its own inputs, as TotK Recomp's `vk_dlaa.c` does: a sub-pixel
+  jitter on the scene's viewports, the scene depth, and camera-only motion vectors from depth and the camera block's
+  view-projection (vertex bank c3, 0x980 bytes, found with `DKB_DUMP_UBO=1`). Still missing: per-object motion
+  (animated characters can smear), DLSS where the game renders at the output size and skips its upscaler, and FSR 3.
+  Frame generation has the same input needs. The drivers' own frame generation (NVIDIA Smooth Motion, AMD AFMF) needs
+  nothing from this project.
 
 ## Alongside
 
