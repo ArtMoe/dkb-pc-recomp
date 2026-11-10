@@ -136,6 +136,8 @@ static struct {
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
     VkDescriptorSetLayout ds_last_layout[2];
     int ds_pushed[2];                    // set number holds the push of DS.psig under ds_layout
+    uint32_t ds_dyn[2][VK_DYN_UBO_MAX];  // dynamic offsets ds_bound[s] was bound with (TOTK_DYN_UBO)
+    uint32_t ds_ndyn[2];
     int res_valid;                       // the graphics sets bound hold what the inputs in RS give (bind_resources)
     float jit[2];                        // the DLSS jitter the recorded viewport carries (vk_dlss_jitter)
 } B;
@@ -1767,7 +1769,8 @@ static VkDescriptorSet alloc_set(VkExec *ex, VkDescriptorSetLayout layout) {
         // new pool cost a driver allocation. Fewer, larger pools make that rarer. TOTK_TRACE=perf counts the pools
         // created (vk_exec_pool_counts).
         static const VkDescriptorPoolSize sizes[] = {
-            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16384}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8192},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16384}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 16384},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8192},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16384}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1024},
             {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1024}};
@@ -2192,6 +2195,28 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, s, 1, &set, 0, NULL);
         } else {
             VkDescriptorSetLayout sl = s ? info->set_layout1 : info->set_layout;
+            // Dynamic uniform buffers (TOTK_DYN_UBO): the offset leaves the descriptor for the bind, so a set that
+            // differs from the last only there is reused. The descriptor keeps a 2 GiB-aligned base, a multiple of
+            // any offset alignment, so the bind's 32-bit offset always reaches; base + offset is the buffer's offset.
+            // TOTK_DYN_UBO=ab: the layouts keep their dynamic buffers, and in the A blocks the offsets stay in the
+            // descriptors (dynamic offsets 0), so each set is written anew as before: the reuse alone is measured.
+            static int dyn_mode = -1;
+            if (dyn_mode < 0) dyn_mode = rt_knob("DYN_UBO", "1");
+            int dyn_split = RT_KNOB_ON(dyn_mode);
+            uint32_t dyn[VK_DYN_UBO_MAX], ndyn = 0;
+            for (uint32_t i = i0, j = d0[s]; i < i1; i++) {
+                const VkPipeBinding *b = &info->bindings[i];
+                uint32_t cnt = b->count ? b->count : 1;
+                if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+                    for (uint32_t k = 0; k < cnt && ndyn < VK_DYN_UBO_MAX; k++) {
+                        VkDescriptorBufferInfo *bi = &d[j + k].buffer;
+                        VkDeviceSize base = bi->range == VK_WHOLE_SIZE || !dyn_split ? bi->offset
+                                                                                     : bi->offset & ~(VkDeviceSize)0x7fffffff;
+                        dyn[ndyn++] = (uint32_t)(bi->offset - base);
+                        bi->offset = base;
+                    }
+                j += cnt;
+            }
             VkDescriptorSet set = B.ds_last[s];
             if (!set || B.ds_last_layout[s] != sl || DS.n[s] != dbytes || memcmp(DS.sig[s], ds, dbytes)) {
                 set = alloc_set(ex, sl);
@@ -2203,9 +2228,10 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             } else {
                 BS.set_reuse++;
             }
-            if (B.ds_bound[s] != set) {
-                vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, s, 1, &set, 0, NULL);
-                B.ds_bound[s] = set, B.ds_pushed[s] = 0;
+            if (B.ds_bound[s] != set || B.ds_ndyn[s] != ndyn || (ndyn && memcmp(B.ds_dyn[s], dyn, ndyn * sizeof *dyn))) {
+                vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, s, 1, &set, ndyn, ndyn ? dyn : NULL);
+                B.ds_bound[s] = set, B.ds_pushed[s] = 0, B.ds_ndyn[s] = ndyn;
+                if (ndyn) memcpy(B.ds_dyn[s], dyn, ndyn * sizeof *dyn);
                 RS.cmds++;
             }
         }
