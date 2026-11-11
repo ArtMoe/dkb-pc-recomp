@@ -25,6 +25,7 @@ def source():
 #include <stdlib.h>
 #include <string.h>
 #include "vk_exec.h"
+#pragma GCC diagnostic ignored "-Wunused-function"   // the descriptor switches this fixture does not reach
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_GS 2
@@ -36,8 +37,12 @@ static struct { unsigned ac_miss; } BS;
 static uint64_t bind_gen=1;
 static uint32_t c0_binst;
 static uint8_t geometry_input;
-static uint64_t memory_generation=1;
-static unsigned remapped, lookup_count, full_count, locked;
+static uint64_t memory_generation=1;   // the pool mappings: vk_mem_pool_gen
+static uint64_t mirror_generation;     // what vk_mem_gen counts on top of them (VRAM mirrors made)
+static uint32_t slots_generation=7, sampler_generation=9, texture_epoch=1;
+static uint32_t address_generation;   // vk_texture.c agen of the texture's address: moves when it is destroyed
+static int keep_ab=1;                 // TOTK_DESC_KEEP is "ab" here: on while this is 1
+static unsigned remapped, replaced, sampler_overwritten, lookup_count, full_count, locked;
 static unsigned checks, failures;
 #define CHECK(c,message) do { checks++; if (!(c)) { failures++; fprintf(stderr,"FAIL: %s\n",message); } } while (0)
 #define HANDLE ((UINT64_C(257)<<20)|UINT64_C(257))
@@ -51,19 +56,20 @@ static const VkTexImage images[]={
 };
 static const GfxShaderRes resource={.slot=0,.type=GFX_TEX_2D};
 void rt_fatal(const char *fmt,...) { (void)fmt; abort(); }
-uint64_t vk_mem_gen(void) { return memory_generation; }
+uint64_t vk_mem_gen(void) { return memory_generation+mirror_generation; }
 uint64_t vk_mem_pool_gen(void) { return memory_generation; }   // a remap below moves the pool mappings
-int rt_knob(const char *name,const char *def) { (void)name; return atoi(def); }   // every knob at its default
-int rt_ab(void) { return 0; }
+// TOTK_DESC_KEEP follows keep_ab; every other switch stays at its default.
+int rt_knob(const char *name,const char *def) { return !strcmp(name,"DESC_KEEP")?2:atoi(def); }
+int rt_ab(void) { return keep_ab; }
 uint64_t vk_usnap_gen(void) { return 1; }
-uint32_t vk_texture_slots_gen(void) { return 7; }
-uint32_t vk_texture_epoch(void) { return 1; }
-uint32_t vk_sampler_gen(void) { return 9; }
+uint32_t vk_texture_slots_gen(void) { return slots_generation; }
+uint32_t vk_texture_epoch(void) { return texture_epoch; }
+uint32_t vk_sampler_gen(void) { return sampler_generation; }
 void vk_texture_lock(void) { if (locked++) abort(); }
 void vk_texture_unlock(void) { if (!locked--) abort(); }
 uint64_t vk_texture_slot_token(const dpool_ref *pool,int id) {
     if (id!=257 || id>=(int)pool->count) return 0;
-    return (pool->addr+32u*(unsigned)id)^memory_generation;
+    return (pool->addr+32u*(unsigned)id)^memory_generation^(uint64_t)address_generation<<40;
 }
 const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool,int id,view_t *view,int *has_view) {
     if (!locked) abort();
@@ -71,12 +77,12 @@ const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool,int id,view_t *v
     if (view) memset(view,0,sizeof *view);
     if (has_view) *has_view=0;
     if (id!=257 || id>=(int)pool->count) return NULL;
-    if (pool->addr==table_a.addr) return &images[remapped];
+    if (pool->addr==table_a.addr) return &images[remapped^replaced];
     if (pool->addr==table_b.addr) return &images[1];
     return NULL;
 }
 static VkSampler sample_token(const dpool_ref *pool) {
-    if (pool->count<=257) return VK_NULL_HANDLE;
+    if (pool->count<=257 || sampler_overwritten) return VK_NULL_HANDLE;
     if (pool->addr==sampler_a.addr) return (VkSampler)(uintptr_t)(remapped?505:303);
     if (pool->addr==sampler_b.addr) return (VkSampler)(uintptr_t)404;
     return VK_NULL_HANDLE;
@@ -109,6 +115,8 @@ static void tex_info_full(VkExec *ex,const GfxShaderRes *r,uint64_t h,int storag
 static void support_in(const VkExec *ex,float in[3]) { (void)ex; (void)in; abort(); }
 static uint64_t ubo_ptr(const VkExec *ex,int st,const GfxShaderRes *r) { (void)ex; (void)st; (void)r; abort(); }
 '''
+    # The descriptor switches (TOTK_DESC_*), which tex_info_lookup and descriptor_state ask.
+    knobs = draw[draw.index('static int knob_on('):draw.index('// TOTK_BIND_STATS counters (bind_stats).')]
     ac = function(draw, 'static struct { uint64_t context, tex[32],') + ' AC[6];\n'
     serial = next(line for line in draw.splitlines() if line.startswith('static uint64_t descriptor_serial'))
     sub = function(draw, 'typedef struct { VkImage image; uint32_t l0,') + ' SubRange;\n'
@@ -124,7 +132,7 @@ static uint64_t ubo_ptr(const VkExec *ex,int st,const GfxShaderRes *r) { (void)e
         ('typedef struct { int st; const GfxShaderRes *res;', ' RsPtr;'),
         ('typedef struct { uint32_t n, bytes; uint8_t sup, c0,', ' RsList;')))
     # TOTK_BIND_STATS's counters, which bind_sig updates only while they are on.
-    bsf_begin = draw.index('enum { BSF_INFO,')
+    bsf_begin = draw.index('enum {\n    BSF_INFO,')
     bsf = draw[bsf_begin:draw.index('} BSF;', bsf_begin) + len('} BSF;')]
     # Only the fields consumed by bind_sig are needed; pipeline range discovery
     # supplies one original fragment texture handle range, without a GPU pipeline.
@@ -240,12 +248,48 @@ int main(void) {
     CHECK(lookup_count==lookups && full_count==builds,"remapped tables can warm caches again");
     CHECK(ex.tex[NVN_STAGE_FS][0]==HANDLE && ex.img[NVN_STAGE_FS][0]==HANDLE &&
           vk_texture_slots_gen()==7 && vk_sampler_gen()==9,"handles and registration generations stayed unchanged");
+
+    // TOTK_DESC_KEEP: a VRAM mirror made between submissions moves vk_mem_gen but no pool mapping. Kept, the texture
+    // descriptors stay (the new epoch costs only the storage check, a lookup and no rebuild); off, they are dropped.
+    builds=full_count;
+    mirror_generation++, texture_epoch++;
+    expect(&ex,GFX_TEX_2D,202,505,2);
+    CHECK(full_count==builds,"keep on: vk_mem_gen moving without vk_mem_pool_gen keeps the texture descriptors");
+    keep_ab=0;
+    expect(&ex,GFX_TEX_2D,202,505,2);
+    builds=full_count;
+    mirror_generation++, texture_epoch++;
+    expect(&ex,GFX_TEX_2D,202,505,2);
+    CHECK(full_count==builds+1,"keep off: vk_mem_gen moving drops the texture descriptors, as before the switch");
+
+    // A texture destroyed between submissions and another made in its slot: its address's generation moves, so the slot
+    // token differs and the descriptor is built again, kept or not.
+    for (int keep=1; keep>=0; keep--) {
+        keep_ab=keep;
+        expect(&ex,GFX_TEX_2D,202,505,2);
+        builds=full_count;
+        replaced^=1, address_generation++, slots_generation++, texture_epoch++, mirror_generation++;
+        expect(&ex,GFX_TEX_1D,101,505,1);
+        CHECK(full_count==builds+1,keep?"keep on: a destroyed texture misses":"keep off: a destroyed texture misses");
+        replaced^=1, address_generation++, slots_generation++, texture_epoch++;
+        expect(&ex,GFX_TEX_2D,202,505,2);
+    }
+    keep_ab=1;
+
+    // A texture registered over the sampler slot: vk_texture.c descriptor_registered bumps samp_gen for it whichever
+    // way TOTK_DESC_SAMP_GEN is set (tests/descriptor_memo_knobs_test.py), and the slot gives no sampler now.
+    builds=full_count;
+    sampler_overwritten=1, sampler_generation++;
+    expect(&ex,GFX_TEX_2D,202,0,2);
+    CHECK(full_count==builds+1,"a sampler slot overwritten by a texture misses");
+    sampler_overwritten=0, sampler_generation++;
+    expect(&ex,GFX_TEX_2D,202,505,2);
     CHECK(!locked,"texture lock balanced");
     printf("descriptor pool caches: %u checks, %u failures\n",checks,failures);
     return failures!=0;
 }
 '''
-    return '\n'.join((prelude, ac, serial, sub, fm, td, memo, sm, range_types, bsf, adapters,
+    return '\n'.join((prelude, knobs, ac, serial, sub, fm, td, memo, sm, range_types, bsf, adapters,
                       'static void descriptor_state(VkExec *ex);', *pieces, selection, tests))
 
 

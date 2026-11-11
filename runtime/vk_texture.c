@@ -1097,12 +1097,15 @@ static void descriptor_registered(DescSlot *d, uint32_t kind) {
     // A sampler lookup answers from sampler slots only (vk_sampler_by_id_locked), so a texture registered over a slot
     // that held no sampler changes no sampler answer. Bananza registers texture descriptors all through a frame, and
     // bumping samp_gen with each one made every kept texture descriptor look its sampler up again (vk_exec_draw.c TD).
+    // TOTK_DESC_SAMP_GEN (0|1|ab, off by default) bumps it for samplers only; off, every registration bumps it.
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("DESC_SAMP_GEN", "0");
     int samplers = kind == DESC_SAMPLER || d->kind == DESC_SAMPLER;
     memset(d, 0, sizeof *d);
     if (!++reg_serial) ++reg_serial;
     d->serial = reg_serial, d->kind = kind;
     slots_gen++;   // a registration can replace bytes previously used by either kind
-    if (samplers) samp_gen++;
+    if (samplers || !RT_KNOB_ON(mode)) samp_gen++;
 }
 
 void vk_texture_register(const dpool_ref *pool, int id, const tex_t *t, const view_t *v) {

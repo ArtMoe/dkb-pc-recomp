@@ -22,7 +22,9 @@ def source(draw):
     recorder = (ROOT / 'runtime/vk_rec.c').read_text()
     context_start = draw.index('static struct {', draw.index('// State of the command buffer being recorded'))
     context_end = draw.index('// The bound-slot bytes of VkExec', context_start)
-    context = draw[context_start:context_end]
+    # The context carries the switches of the descriptor memos, most of which bind_resources does not ask.
+    context = ('#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wunused-function"\n' +
+               draw[context_start:context_end] + '\n#pragma GCC diagnostic pop\n')
     declarations = '\n'.join(function(recorder, prefix) + suffix for prefix, suffix in (
         ('typedef struct { PFN_vkCmdPushDescriptorSetWithTemplateKHR fn;', ' A_PushTpl;'),
         ('typedef struct { PFN_vkCmdPushDescriptorSetKHR fn;', ' A_Push;')))

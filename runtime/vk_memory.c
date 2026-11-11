@@ -1508,12 +1508,7 @@ static int range_cmp(const void *x, const void *y) {
 // Records the ranges as one vkCmdCopyBuffer per pool, overlapping and adjacent ranges merged; to_mirror: buf -> mbuf,
 // else mbuf -> buf. Returns the commands recorded; adds what they move to *bytes and *copies.
 static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies) {
-    // The dirty pages are walked in address order, so these ranges are all but always sorted already, and qsort's
-    // indirect comparator was 1.4% of a frame on its own. One linear check skips it whenever nothing is out of place.
-    int sorted = 1;
-    for (int i = 1; i < n && sorted; i++)
-        if (range_cmp(&a[i - 1], &a[i]) > 0) sorted = 0;
-    if (!sorted) qsort(a, (size_t)n, sizeof *a, range_cmp);
+    qsort(a, (size_t)n, sizeof *a, range_cmp);
     int rec = 0;
     for (int i = 0; i < n;) {
         PoolRec *r = a[i].r;

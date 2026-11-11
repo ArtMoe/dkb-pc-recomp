@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "nvn_hmap.h"
 #include "vk_exec.h"
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
@@ -56,7 +55,8 @@ void vk_texture_lock(void) { abort(); }
 void vk_texture_unlock(void) { abort(); }
 static void tex_info(VkExec *ex,const GfxShaderRes *r,uint64_t h,int image,int separate,uint32_t gen,uint32_t ep,
                      uint32_t sg,int *locked,VkDescriptorImageInfo *out) {
-    (void)ex; (void)r; (void)h; (void)image; (void)separate; (void)gen; (void)ep; (void)sg; (void)locked; (void)out; abort();
+    (void)ex; (void)r; (void)h; (void)image; (void)separate; (void)gen; (void)ep; (void)sg; (void)locked; (void)out;
+    abort();
 }
 // The descriptor memos' keys: one unchanged descriptor context for every case.
 static void descriptor_state(VkExec *ex) { (void)ex; }
@@ -175,7 +175,6 @@ static void consume(void) {
 static void run(const char *name,uint32_t vs,uint32_t fs,int compute,int default_sets) {
     case_name=name;
     memset(&B,0,sizeof B); memset(&DS,0,sizeof DS); memset(&RS,0,sizeof RS);
-    memset(&DSC,0,sizeof DSC);   // no set allocated in an earlier case is reused
     memset(pushed,0,sizeof pushed); memset(written,0,sizeof written);
     memset(allocated,0,sizeof allocated); memset(bound,0,sizeof bound);
     memset(expected,0,sizeof expected); memset(expected_count,0,sizeof expected_count);

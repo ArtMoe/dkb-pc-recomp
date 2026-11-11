@@ -30,8 +30,9 @@ def fixture(draw):
     warning = draw.index('enum { W_PROGRAM')
     cache = draw.index('#define STAGEM_N ')
     declarations = draw[warning:draw.index(';', warning) + 1]
-    # The per-serial stage cache, after the scan it falls back to.
+    # The per-serial stage cache, after the scan it falls back to and the switch of its origin memo.
     declarations += '\n' + function(draw, 'static int find_stage_scan(')
+    declarations += '\n' + function(draw, 'static int knob_on(') + '\n' + function(draw, 'static int stage_origin_on(')
     declarations += '\n' + draw[cache:draw.index('static int find_stage(', cache)] + '\n'
     providers = r'''
 #include <stdio.h>
@@ -57,6 +58,8 @@ int cfg_bool(const char *name) {
 static int c0_on(void) { return fix_c0; }
 uint64_t nvn2_origin(const uint8_t *code) { return code==original_native_code?17:0; }
 static void warn_once(int kind,const char *format,...) { (void)kind;(void)format;warnings++; }
+int rt_knob(const char *name,const char *def) { (void)name; return atoi(def); }   // every switch at its default
+int rt_ab(void) { return 0; }
 '''
     functions = '\n'.join([
         function(shader, 'int gfx_shader_is_nvn2('),
