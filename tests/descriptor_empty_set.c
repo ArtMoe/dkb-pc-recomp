@@ -13,6 +13,8 @@
 #define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
 #define A8(x) (((x) + 7) & ~(size_t)7)
+#define DP_MARK(i) ((void)(i))   // the draw profile's marks time nothing here
+enum { DP_SIG, DP_UBO, DP_SSBO, DP_TEX, DP_SETS };
 @CONTEXT@
 
 static unsigned checks, failures, pushed[2], written[2], allocated[2], bound[2];
@@ -30,6 +32,8 @@ static struct { VkBufferView zview; } Z;
 
 void rt_fatal(const char *fmt,...) { (void)fmt; abort(); }
 VkCtx *vk_ctx(void) { return &context; }
+int rt_knob(const char *name,const char *def) { (void)name; (void)def; return 0; } // dynamic uniform buffers off
+int rt_ab(void) { return 0; }
 static void bind_stats(const VkPipeInfo *info) { (void)info; }
 static int bind_skip_on(void) { return 0; } // exercise every descriptor build
 static int push_skip_on(void) { return 0; } // exercise every push

@@ -416,7 +416,7 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size);    // a GPU-written mirrored texture there has stale storage
 uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recorded writer of such a texture; 0: none
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
-// The replay's deferred-read write-back (TOTK_WB_ASYNC, default on): copies recorded and submitted without waiting,
+// The replay's deferred-read write-back (TOTK_WB_ASYNC, default off): copies recorded and submitted without waiting,
 // written to the storage by a later vk_texture_wb_poll once they completed. TOTK_WB_ASYNC=0: vk_texture_write_back.
 void vk_texture_write_back_async(uint64_t addr, uint64_t size);
 void vk_texture_wb_poll(void);                      // finishes the asynchronous write-backs whose copies completed

@@ -219,10 +219,10 @@ static int ensure_init(void) {
     vkGetPhysicalDeviceProperties2(c->phys, &p2);
     P.max_push = pd.maxPushDescriptors;
     P.max_stage_samplers = p2.properties.limits.maxPerStageDescriptorSamplers;
-    {   // TOTK_DYN_UBO (default on, 0 off): see dyn_ubo_convert
-        const char *du = cfg_get("TOTK_DYN_UBO");
+    {   // TOTK_DYN_UBO (default off, 1 on, ab as 1 here; bind_resources reads the same knob): see dyn_ubo_convert.
+        // Off until it has run under the validation layer and on AMD and Intel.
         uint32_t lim = p2.properties.limits.maxDescriptorSetUniformBuffersDynamic;
-        P.dyn_ubo = du && !strcmp(du, "0") ? 0 : lim < VK_DYN_UBO_MAX ? lim : VK_DYN_UBO_MAX;
+        P.dyn_ubo = !rt_knob("DYN_UBO", "0") ? 0 : lim < VK_DYN_UBO_MAX ? lim : VK_DYN_UBO_MAX;
         rt_log("vk_pipeline: dynamic uniform buffers in the allocated fragment set: %s (up to %u, device limit %u)",
                P.dyn_ubo ? "on" : "off", P.dyn_ubo, lim);
     }

@@ -100,7 +100,8 @@ static uint64_t cur_fence;
 // Descriptor pools and full-size transient chunks go back to these lists when their command buffer completes, instead
 // of being destroyed and created again for the next one: each creation is a driver memory allocation (on Windows an
 // allocation, a map and a paging-fence wait on the CPU), about ten of them per frame inside the replay.
-#define SPARE_POOLS 64
+// A pool holds 1024 sets, so 16 spares keep the driver memory they pin (about 150 MB with 64) small.
+#define SPARE_POOLS 16
 #define SPARE_CHUNKS 16
 static PlatMutex spare_lock = PLAT_MUTEX_INIT;
 static VkDescriptorPool spare_pool[SPARE_POOLS];
@@ -174,6 +175,8 @@ static struct {
     int cmds;                            // check mode: pushes, binds and set writes the build recorded
     uint32_t ckn;                        // check mode: the last build's packed descriptors (bytes in ck)
     uint8_t ck[DS_SIG_BYTES];
+    uint32_t ckdn;                       // check mode: the dynamic offsets of the last build's sets (ck holds only bases)
+    uint32_t ckdyn[2 * VK_DYN_UBO_MAX];
 } RS = {-1};
 
 // The bound-slot bytes of VkExec a pipeline's descriptors read, as ranges merged where they touch, built once per
@@ -960,11 +963,11 @@ static VkDescriptorBufferInfo zero_info(uint64_t max) {
     return (VkDescriptorBufferInfo){Z.zbuf, 0, max < ZERO_BYTES ? max : ZERO_BYTES};
 }
 
-// vk_mem_count, also kept per (class, use) while a graphics build runs (RS).
 // DKB_DRAW_PROFILE=1: where a draw's replay time goes, by section, logged every 60000 draws as nanoseconds per draw.
 // The sections follow prepare_draw from the pass to the vertex buffers; DP_OPS is the rest of vk_exec_op_draw (the
-// bind ops, index buffers, the draw command). Time comes from the TSC (x86) and is scaled to nanoseconds against the
-// clock over each window. Off by default: two TSC reads per section.
+// bind ops, index buffers, the draw command). The "other-ops" section also counts the time of dispatches and uniform
+// updates, and is divided by draws only. Time comes from the TSC (x86) and is scaled to nanoseconds against the
+// clock over each window. Off by default: one TSC read per mark.
 enum { DP_PASS, DP_SHADER, DP_PIPE, DP_STATE, DP_SIG, DP_UBO, DP_SSBO, DP_TEX, DP_SETS, DP_FEEDBACK, DP_VB, DP_TAIL,
        DP_OPS, DP_N };
 static const char *const dp_name[DP_N] = {"pass", "shaders", "pipeline", "state", "bind-sig", "ubo", "ssbo", "textures",
@@ -1007,6 +1010,7 @@ static void dp_log(void) {
     DP.draws = DP.ops = 0, DP.win_tk = tk, DP.win_ns = ns;
 }
 
+// vk_mem_count, also kept per (class, use) while a graphics build runs (RS).
 static void count_use(int cls, int use, uint64_t n) {
     vk_mem_count(cls, use, n);
     if (!RS.rec) return;
@@ -2162,6 +2166,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         B.ds_pushed[0] = B.ds_pushed[1] = 0;
         set1_first = n_sets == 2 && vk_ctx()->validation;
     }
+    uint32_t alld[2 * VK_DYN_UBO_MAX], nall = 0;   // the dynamic offsets of every set, for the check mode
     for (uint32_t k = 0; k < n_sets; k++) {
         uint32_t s = set1_first ? 1 - k : k, i0 = lo[s], i1 = hi[s];
         const VkDescSlot *ds = &d[d0[s]];
@@ -2201,7 +2206,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             // TOTK_DYN_UBO=ab: the layouts keep their dynamic buffers, and in the A blocks the offsets stay in the
             // descriptors (dynamic offsets 0), so each set is written anew as before: the reuse alone is measured.
             static int dyn_mode = -1;
-            if (dyn_mode < 0) dyn_mode = rt_knob("DYN_UBO", "1");
+            if (dyn_mode < 0) dyn_mode = rt_knob("DYN_UBO", "0");   // off by default, as in vk_pipeline.c ensure_init
             int dyn_split = RT_KNOB_ON(dyn_mode);
             uint32_t dyn[VK_DYN_UBO_MAX], ndyn = 0;
             for (uint32_t i = i0, j = d0[s]; i < i1; i++) {
@@ -2217,6 +2222,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                     }
                 j += cnt;
             }
+            memcpy(alld + nall, dyn, ndyn * sizeof *dyn), nall += ndyn;
             VkDescriptorSet set = B.ds_last[s];
             if (!set || B.ds_last_layout[s] != sl || DS.n[s] != dbytes || memcmp(DS.sig[s], ds, dbytes)) {
                 set = alloc_set(ex, sl);
@@ -2245,7 +2251,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             if (hi[s] > lo[s] && (s ? info->push1 : info->push) && !B.ds_pushed[s]) valid = 0;
         if (skip == 2) {   // with the pipeline info equal (bind_sig), the packed descriptors determine every write
             uint32_t n = (uint32_t)(nd * sizeof *d);
-            int wr = n != RS.ckn || memcmp(RS.ck, d, n);
+            int wr = n != RS.ckn || memcmp(RS.ck, d, n) || nall != RS.ckdn || memcmp(RS.ckdyn, alld, nall * sizeof *alld);
             int cn = RS.ncnt != RS.pncnt || memcmp(RS.cnt, RS.pcnt, sizeof RS.cnt[0] * (size_t)RS.ncnt);
             if (same && was_valid && (wr || cn || RS.cmds))
                 rt_fatal("vk_exec: descriptor build skip check: a draw of program %llu with the inputs of the previous one "
@@ -2254,6 +2260,8 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             if (same && was_valid) BS.bind_skip++;   // the draws a skip would have spared, compared instead
             RS.ckn = n;
             memcpy(RS.ck, d, n);
+            RS.ckdn = nall;
+            memcpy(RS.ckdyn, alld, nall * sizeof *alld);
         }
         B.res_valid = valid;
     }

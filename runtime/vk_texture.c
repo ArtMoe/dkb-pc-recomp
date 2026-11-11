@@ -1594,6 +1594,7 @@ typedef struct {
     size_t slice, ib;
     uint32_t gen;                 // e->gpu_gen when recorded: CPU writes after it keep the storage
     uint64_t gseq, seq;           // e->gpu_seq when recorded; upload batch holding the copy
+    int keep;                     // vk_texture_wb_poll's decision for a completed copy: the CPU rewrote the storage
 } WbPend;
 static WbPend *wbp;
 static int nwbp, cwbp;
@@ -1708,16 +1709,30 @@ void vk_texture_wb_poll(void) {
     if (!__atomic_load_n(&nwbp, __ATOMIC_RELAXED)) return;
     VkCtx *c = vk_ctx();
     lock();
+    // Every completed copy is decided before any is written, as vk_texture_write_back does: a write below is itself a
+    // CPU write to storage another texture may share, which the check would take for a rewrite by the CPU. The
+    // regions of one texture were queued together and share one decision, stored on each of them: keep -1 for a copy
+    // that has not completed (it stays pending; vk_upload_done is asked only here, so pass 2 cannot see a batch that
+    // completed in between), 0 to write it (also a destroyed entry, which only frees its staging), 1 when the CPU
+    // rewrote the storage.
+    for (int i = 0; i < nwbp;) {
+        int j = i + 1;
+        while (j < nwbp && wbp[j].e == wbp[i].e && wbp[j].seq == wbp[i].seq) j++;
+        int keep = -1;
+        if (vk_upload_done(wbp[i].seq)) {
+            uint32_t now;
+            keep = wbp[i].e && storage_rewritten(wbp[i].e, wbp[i].gen, &now) == 1;
+        }
+        for (int q = i; q < j; q++) wbp[q].keep = keep;
+        i = j;
+    }
     int k = 0;
     for (int i = 0; i < nwbp;) {
-        if (!vk_upload_done(wbp[i].seq)) { wbp[k++] = wbp[i++]; continue; }
-        // The regions of one texture were queued together: decided once, since writing the first region is itself a
-        // write to the storage the check would see.
+        if (wbp[i].keep < 0) { wbp[k++] = wbp[i++]; continue; }
         int j = i + 1;
         while (j < nwbp && wbp[j].e == wbp[i].e && wbp[j].seq == wbp[i].seq) j++;
         Tex *e = wbp[i].e;
-        uint32_t now;
-        if (e && storage_rewritten(e, wbp[i].gen, &now) == 1) {
+        if (e && wbp[i].keep) {
             wb_async_kept++;   // the CPU wrote the storage after the render: its bytes stay
             if (e->gpu_seq == wbp[i].gseq) e->gpu_dirty = 0;
         } else if (e) {
@@ -1747,8 +1762,11 @@ void vk_texture_wb_poll(void) {
             storage_rewritten(e, 0, &g2);
             if (e->gpu_seq == wbp[i].gseq) e->gpu_dirty = 0;
             else e->gpu_gen = g2;
+            // The same goes for the copies of another texture whose storage overlaps the one just written.
             for (int q = j; q < nwbp; q++)
-                if (wbp[q].e == e) wbp[q].gen = g2;
+                if (wbp[q].e == e || (wbp[q].e && wbp[q].e->pub.addr < e->pub.addr + e->t.L.size &&
+                                      e->pub.addr < wbp[q].e->pub.addr + wbp[q].e->t.L.size))
+                    wbp[q].gen = g2;
         }
         for (int q = i; q < j; q++) vmaDestroyBuffer(c->vma, wbp[q].sb, wbp[q].sa);
         i = j;
@@ -2070,6 +2088,9 @@ void vk_texture_census(VkTexCensus *s) {
 void vk_texture_shutdown(void) {
     VkCtx *c = vk_ctx();
     lock();
+    for (int i = 0; i < nwbp && c; i++) vmaDestroyBuffer(c->vma, wbp[i].sb, wbp[i].sa);   // copies never polled
+    free(wbp);
+    wbp = NULL, nwbp = cwbp = 0;
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
     int n = 0;
     for (uint32_t i = 0; i < by_key.cap; i++)
