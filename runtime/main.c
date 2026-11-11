@@ -27,6 +27,7 @@
 
 #include "aoc_romfs.h"
 #include "cfg.h"
+#include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
@@ -573,9 +574,9 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
     if (!strcmp(mode, "--probe-aoc")) return probe_aoc();
-    if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
-    if (!strcmp(mode, "--translate-shaders")) return vk_pipeline_translate_shaders();
-    if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
+    if (!strcmp(mode, "--prepare-shaders")) return gfx_shader_tool(GFX_TOOL_PREPARE_SHADERS);
+    if (!strcmp(mode, "--translate-shaders")) return gfx_shader_tool(GFX_TOOL_TRANSLATE_SHADERS);
+    if (!strcmp(mode, "--warm-shaders")) return gfx_shader_tool(GFX_TOOL_WARM_SHADERS);
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     return usage(argv[0]);
 }

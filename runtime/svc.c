@@ -8,9 +8,9 @@
 
 #include "cfg.h"
 #include "fs.h"
+#include "gfx.h"
 #include "host.h"
 #include "kernel.h"
-#include "vk.h"
 #include "platform/platform.h"
 
 #define R_OK 0u
@@ -243,7 +243,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         char at[160];
         rt_log("guest ExitProcess at %s; exiting", ldr_describe(pc, at, sizeof at));
         fs_save_flush();
-        vk_pipeline_save();
+        gfx_backend()->save();
         prof_write();
         fflush(NULL);
         if (svc_test_exit_hook) return svc_test_exit_hook(0);

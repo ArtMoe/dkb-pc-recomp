@@ -611,6 +611,33 @@ static void vk_be_cpu_synced(uint64_t fence) {
     vk_texture_write_back_small(fence);
 }
 
+// ---- host side of GfxBackend
+static int vk_be_shader_tool(int tool) {
+    return tool == GFX_TOOL_PREPARE_SHADERS ? vk_pipeline_prepare_shaders()
+         : tool == GFX_TOOL_TRANSLATE_SHADERS ? vk_pipeline_translate_shaders() : vk_pipeline_warm_shaders();
+}
+
+static const GfxExecFrame *vk_be_exec_frame(void) { return &vk_exec_frame; }
+
+// The system info's GPU and driver lines (sysinfo.c); 0 before vk_init.
+static int vk_be_device_text(char *buf, size_t n) {
+    VkCtx *c = vk_ctx();
+    if (!c || !n) return 0;
+    VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+    vkGetPhysicalDeviceProperties2(c->phys, &p2);
+    const VkPhysicalDeviceProperties *p = &p2.properties;
+    uint64_t vram = 0;
+    for (uint32_t h = 0; h < c->mem_props.memoryHeapCount; h++)
+        if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram += c->mem_props.memoryHeaps[h].size;
+    int k = snprintf(buf, n, "GPU: %s (vendor 0x%04x, device 0x%04x), %.1f GB device-local memory\n"
+                             "Driver: %s %s, driver version 0x%08x, Vulkan %u.%u.%u\n",
+                     p->deviceName, p->vendorID, p->deviceID, vram / 1073741824.0, dp.driverName, dp.driverInfo,
+                     p->driverVersion, VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion),
+                     VK_API_VERSION_PATCH(p->apiVersion));
+    return k < 0 ? 0 : (size_t)k < n ? k : (int)n - 1;
+}
+
 const GfxBackend gfx_vulkan_backend = {
     .name = "vulkan",
     .pool_init = vk_be_pool_init,
@@ -630,6 +657,21 @@ const GfxBackend gfx_vulkan_backend = {
     .guest_written = vk_be_guest_written,
     .guest_read = vk_be_guest_read,
     .cpu_synced = vk_be_cpu_synced,
+    .window_start = vk_present_window_start,
+    .window_resize = vk_present_window_resize,
+    .present_mode = vk_present_mode,
+    .window_hdr10 = vk_present_hdr10,
+    .boot_async = vk_pipeline_async_enable,
+    .boot_prewarm = vk_pipeline_prewarm,
+    .save = vk_pipeline_save,
+    .exit_wait = vk_present_exit_wait,
+    .exit_release = vk_present_exit_release,
+    .shader_tool = vk_be_shader_tool,
+    .thumbs_enable = vk_thumbs_enable,
+    .thumbs_read = vk_thumbs_read,
+    .exec_frame = vk_be_exec_frame,
+    .device_text = vk_be_device_text,
+    .dump_request = vk_dump_request,
 };
 
 void vk_backend_shutdown(void) {
