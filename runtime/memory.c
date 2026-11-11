@@ -316,13 +316,16 @@ void mem_commit_report(const char *when) {
     if (!L.pool) return;
     uint64_t s[B_N] = {0};
     plat_mem_walk(report_run, s);
+    // How much of the committed heap+stack the game has touched: the same range the B_LOW bucket counts.
+    uint64_t resident = plat_mem_resident(L.aslr.base, LOW_SIZE);
     double proc, used, limit, M = 1048576.0;
     plat_commit_info(&proc, &used, &limit);
     char gpu[256];
     vk_mem_gpu_summary(gpu, sizeof gpu);
     rt_log("mem: commit %s: guest heap+stack %.0f MiB, alias %.0f, modules %.0f, kernel %.0f, other private %.0f, mapped "
-           "%.0f, image %.0f; process commit %.0f MiB (limit %.0f)%s", when, s[B_LOW] / M, s[B_ALIAS] / M, s[B_MODS] / M,
-           s[B_KERNEL] / M, s[B_PRIVATE] / M, s[B_MAPPED] / M, s[B_IMAGE] / M, proc, limit, gpu);
+           "%.0f, image %.0f; process commit %.0f MiB (limit %.0f), guest heap+stack resident %.0f MiB%s", when, s[B_LOW] / M,
+           s[B_ALIAS] / M, s[B_MODS] / M, s[B_KERNEL] / M, s[B_PRIVATE] / M, s[B_MAPPED] / M, s[B_IMAGE] / M, proc, limit,
+           resident / M, gpu);
 }
 
 // A range inside one watched reservation (stack and heap block, or alias region) only.

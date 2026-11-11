@@ -1440,6 +1440,24 @@ void plat_mem_walk(void (*fn)(uint64_t base, uint64_t size, int kind, void *arg)
     }
 }
 
+// Counts the 4 KiB pages of the range that are in the working set. QueryWorkingSetEx answers per page, in batches so
+// the query buffer stays at 1 MiB; a page that is reserved, uncommitted or paged out reports Valid = 0.
+uint64_t plat_mem_resident(uint64_t base, uint64_t size) {
+    enum { BATCH = 65536 };
+    PSAPI_WORKING_SET_EX_INFORMATION *wi = malloc(BATCH * sizeof *wi);
+    if (!wi) return 0;
+    uint64_t pages = 0, end = base + size;
+    for (uint64_t a = base & ~4095ull; a < end; a += (uint64_t)BATCH * 4096) {
+        uint64_t n = (end - a + 4095) / 4096;
+        if (n > BATCH) n = BATCH;
+        for (uint64_t i = 0; i < n; i++) wi[i].VirtualAddress = (void *)(uintptr_t)(a + i * 4096);
+        if (!K32QueryWorkingSetEx(GetCurrentProcess(), wi, (DWORD)(n * sizeof *wi))) break;
+        for (uint64_t i = 0; i < n; i++) pages += wi[i].VirtualAttributes.Valid;
+    }
+    free(wi);
+    return pages * 4096;
+}
+
 // ---- child processes
 
 struct PlatChild {
