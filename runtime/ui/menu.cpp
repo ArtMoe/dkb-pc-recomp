@@ -543,7 +543,7 @@ static void rows_dkb_wide(void) {
     // (runtime/dkb_wide.c dkb_wide_pool_bytes), so these sizes work on 1.0.0; tested on
     // one NVIDIA GPU. 3.2.0 has the same patch ported but is untested.
     static const char *const standard[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "2880x1620", "3840x2160"};
-    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1080", "5120x1440"};
+    static const char *const wide[] = {"2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440"};
     bool enabled = cfg_bool("TOTK_ULTRAWIDE");
     const char *const *sizes = enabled ? wide : standard;
     int count = enabled ? sizeof wide / sizeof *wide : sizeof standard / sizeof *standard;
