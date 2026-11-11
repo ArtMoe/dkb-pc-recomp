@@ -137,6 +137,16 @@ void vk_fsr_release(void);   // before the device goes away
 // swapchain image dst, which is in TRANSFER_DST and holds the scaled picture, and leaves it there; 0 = nothing recorded.
 int vk_smaa_record(VkCommandBuffer cb, VkImage dst, const int to[4]);
 void vk_smaa_release(void);   // before the device goes away
+// Frame generation (vk_framegen.c, TOTK_FRAME_GEN = 2x), called by the present thread. vk_fg_record: before the game's
+// frame is presented, copies the crop of src (the window texture, in GENERAL, fmt its format, w x h) into its history and,
+// when the frame before is there, makes the frame between them; returns 1 when a made frame exists (then the caller
+// calls vk_fg_show in place of the blit), 0 for the plain present (off, no history, a hitch, a failure). The game's
+// texture is read only by the command buffer it submits. vk_fg_show: presents the made frame, then the game's, whose
+// flip waits half a frame interval, or until pending() says another job is waiting; frame (0: none) goes to
+// vk_thumbs_frame for the game's frame.
+int vk_fg_record(VkImage src, VkFormat fmt, int w, int h, const int crop[4]);
+void vk_fg_show(int (*pending)(void), uint64_t frame);
+void vk_fg_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -158,6 +168,7 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
+int gfx_window_closing(void);   // the exit has started: the swapchain and the present passes are being freed
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
 void vk_queue_lock(void);

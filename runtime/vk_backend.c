@@ -65,6 +65,14 @@ static int present_hold(void) {
     return on;
 }
 
+// Whether a present job waits (vk_fg_show gives up its wait for it).
+static int job_pending(void) {
+    plat_mutex_lock(&pl);
+    int p = pending;
+    plat_mutex_unlock(&pl);
+    return p;
+}
+
 static void present_main(void *arg) {
     (void)arg;
     uint64_t last = 0, last_queued = 0;
@@ -76,8 +84,13 @@ static void present_main(void *arg) {
         busy = 1;
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
-        if (flight_on) vk_thumbs_frame(j.frame);
-        vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        // Frame generation (TOTK_FRAME_GEN, vk_framegen.c): its command buffer is the only reader of the game's texture, so
+        // `made` replaces the blit below, and busy goes down as soon as that buffer is submitted
+        int made = vk_fg_record(j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        if (!made) {
+            if (flight_on) vk_thumbs_frame(j.frame);
+            vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        }
         uint64_t f = vk_sync_submit(NULL, 0, 0); // no guest reports; this value only covers the blit
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
@@ -87,9 +100,10 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        if (present_hold()) wait_until(j.at);
+        if (made) vk_fg_show(job_pending, flight_on ? j.frame : 0);   // paces and flips itself, and never waits on a new job
+        else if (present_hold()) wait_until(j.at);
         uint64_t t1 = kern_now_ns();
-        vk_present_flip();
+        if (!made) vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)

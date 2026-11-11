@@ -263,6 +263,7 @@ change passes these, all run with `.venv`:
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\codec_abi_test.py`, `tests\jcms_abi_test.py`, `tests\system_services_test.py`, `tests\nvn_version_test.py` | the `nn::codec` VP9 ABI, the Jcms peripheral stubs, the system service host bindings and the NVN minor version per target | no |
 | `tests\input_script_test.py --cc <clang>` | the scripted input parser and scheduler (`runtime/input_script.c`) on synthetic clocks: ticks, timed events, holds, mixed scripts, the landing summary | no |
+| `tests\fg_pace_test.py --cc <clang>` | the pacing arithmetic of the frame generation (`runtime/fg_pace.h`) on a synthetic clock: the interval average, its clamps, the hitch rule, even spacing | no |
 | `tests\aoc_romfs_test.py --cc <clang>` | the add-on content reader on synthetic TOTKRFS1 packs: bad and unsorted indexes, EOF reads, handle table, unmount and remount, `ListAddOnContent` paging | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 

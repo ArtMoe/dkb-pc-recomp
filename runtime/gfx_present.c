@@ -862,6 +862,8 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     present_image(src, layout, fmt, w, h, crop, 1);
 }
 
+int gfx_window_closing(void) { return plat_cas32(&g_closed, 0, 0) != 0; }
+
 void vk_present_flip(void) {
     plat_rmutex_lock(&g_pl);
     flip_locked();
@@ -890,6 +892,7 @@ void gfx_window_release_vk(void) {
         menu_vk_release();
         vk_fsr_release();
         vk_smaa_release();
+        vk_fg_release();
         vk_color_release();
         vk_hdr_release();
         free_capture();
