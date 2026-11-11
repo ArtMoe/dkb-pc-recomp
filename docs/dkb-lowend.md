@@ -30,3 +30,28 @@ reports 31 to 35 fps there with about 8,300 draws a frame), so treat it as a flo
 - the exe image: about 0.5 GiB.
 
 `TOTK_APP_POOL` below 8 GiB makes the game crash at start (access violation reading 0xc8), so it is not a way to save memory.
+
+## Thread knobs on 2 and 4 logical processors
+
+Same route, 60 s runs, one knob changed from the defaults at a time. Repeated runs of the same setting differ by about
+1 fps in the mean and 0.5 ms in the replay average.
+
+| Logical processors | Setting | Mean fps | Steady fps | Replay avg (ms) |
+| ---: | --- | ---: | ---: | ---: |
+| 2 | defaults | 46.5 to 42.9 | 55.6 to 55.7 | 11.8 to 13.1 |
+| 2 | `VK_RECORDER=0` | 48.2 to 48.4 | 58.9 to 60.0 | 5.9 to 6.6 |
+| 2 | `REPLAY_ASYNC=1` | 45.6 | 56.1 | 12.4 |
+| 2 | `SPLIT_DRAWS=0` | 46.4 | 57.4 | 9.2 |
+| 2 | `SPLIT_DRAWS=256` | 46.2 | 57.5 | 12.4 |
+| 2 | `FREE_CORES=1` | the run stopped at frame 1353 | | |
+| 4 | defaults | 52.7 to 53.1 | 58.9 to 59.0 | 6.3 to 6.6 |
+| 4 | `VK_RECORDER=0` | 50.3 | 59.0 | 6.3 |
+
+- With 2 logical processors the recorder thread competes with the replay for a core. Turning it off halves the replay
+  time and brings the steady rate to 60 fps. With 4 it changes nothing.
+- `FREE_CORES=1` with 2 logical processors stopped producing frames after about 25 s. It is off by default and stays off.
+- The worst window stays near 1 to 1.7 s whatever the setting: it is the shader translation at the start, not a thread
+  setting.
+
+This route is light, so these are not yet reasons to change a default. A low-end profile would turn the recorder off at
+2 logical processors once a heavy scene confirms it.
