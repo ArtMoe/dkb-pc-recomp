@@ -47,6 +47,9 @@ static int layer_present(const char *name) {
     return found;
 }
 
+// An instance extension the loader offers. Enabling one it does not offer fails vkCreateInstance outright, so
+// create_instance asks first: for the HDR10 colour-space extension, for what DLSS wants, and on macOS for the
+// portability enumeration extension.
 static int instance_ext_present(const char *name) {
     uint32_t n = 0;
     vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
@@ -70,20 +73,6 @@ static void mesa_cache_beside_exe(void) {
     strcpy(cut + 1, "mesa-cache");
     plat_setenv("MESA_SHADER_CACHE_DIR", dir);
 }
-
-#ifdef __APPLE__
-// An instance extension the loader offers. Enabling one it does not offer fails vkCreateInstance outright, so the
-// portability enumeration extension below is checked first (macOS only, create_instance).
-static int instance_ext_present(const char *name) {
-    uint32_t n = 0;
-    vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
-    VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
-    vkEnumerateInstanceExtensionProperties(NULL, &n, e);
-    int found = has_ext(e, n, name);
-    free(e);
-    return found;
-}
-#endif
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
