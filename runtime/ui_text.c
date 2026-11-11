@@ -30,8 +30,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
     [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
-    [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
-    [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
+    [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_IS_DEFAULT] = "Default",
+    [UI_MENU_AFTER_RESTART] = "Restart required", [UI_MENU_SET_BY_ENV] = "Locked by environment variable",
     [UI_MENU_SAVE_FAILED] = "could not save settings",
     [UI_MENU_VERSION] = "DKB Recomp %s, game %s",
 
@@ -348,8 +348,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
-    [UI_MENU_DEFAULT_MARK] = "по умолчанию",
-    [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
+    [UI_MENU_IS_DEFAULT] = "По умолчанию",
+    [UI_MENU_AFTER_RESTART] = "Требуется перезапуск", [UI_MENU_SET_BY_ENV] = "Задано переменной окружения",
     [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
     [UI_MENU_VERSION] = "DKB Recomp %s, игра %s",
 
