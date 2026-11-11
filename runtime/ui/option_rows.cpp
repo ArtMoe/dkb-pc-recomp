@@ -104,6 +104,14 @@ static void offer_help(ImGuiID row, bool hovered, bool focused, const char *titl
 
 void opt_focus_first(void) { g_focus_req = true; }
 
+void opt_focus_first_item(void) {
+    if (!g_take_first) return;
+    ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+    ImGui::SetNavCursorVisible(true);
+    ImGui::SetScrollY(0);
+    g_take_first = false;
+}
+
 void opt_focus_key(const char *key) { snprintf(g_focus_key, sizeof g_focus_key, "%s", key); }
 
 void opt_reserve_bottom(float h) { g_bottom = h; }

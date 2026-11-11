@@ -204,7 +204,7 @@ static void frame_limit_live(void) {
     else if (hz && hz < 60 && !step_word && !rt_game_version)
         // Bananza's own controller picks the present interval and the pacer follows it, so a lower limit is not held
         // without the real-time step (issue #118: a 30 fps limit still ran at 60).
-        rt_log("frame rate: limit %d fps needs the real-time step (DKB_REALTIME=1, 'Game speed follows the clock'); the game keeps its own timing", hz);
+        rt_log("frame rate: limit %d fps needs the real-time step (DKB_REALTIME=1, 'Allow higher frame rates'); the game keeps its own timing", hz);
     else if (hz) rt_log("frame rate: limit %d fps", hz);
     else if (gfx_window_refresh_hz() > 0) rt_log("frame rate: limit at the monitor's refresh rate (%.3f Hz now)", gfx_window_refresh_hz());
     else rt_log("frame rate: limit at the monitor's refresh rate (60 until the window measures it)");
