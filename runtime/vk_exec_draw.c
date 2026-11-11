@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "msort.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
@@ -349,10 +350,8 @@ static int reset_mapped(void *context, uint64_t addr, uint32_t size) {
     return vk_mem_resolve(addr, size, &span);
 }
 
-static int cmp_u64(const void *a, const void *b) {
-    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
-    return (x > y) - (x < y);
-}
+#define U64_LESS(x, y) (*(x) < *(y))
+MSORT_DEFINE(sort_u64, uint64_t, U64_LESS)   // without a call per comparison (msort.h)
 
 // Whether two nonnull targets share a byte (duplicates included). Their copies then need a barrier between them to
 // keep the input order; disjoint targets can all be copied after one barrier.
@@ -362,7 +361,9 @@ static int reset_targets_overlap(const uint64_t *pointers, uint32_t count) {
     uint32_t n = 0;
     for (uint32_t i = 0; i < count; i++)
         if (pointers[i]) sorted[n++] = pointers[i];
-    qsort(sorted, n, sizeof *sorted, cmp_u64);
+    static uint64_t *sbuf;   // the replaying thread's
+    static size_t scap;
+    sort_u64(sorted, n, &sbuf, &scap);
     int overlap = 0;
     for (uint32_t i = 1; i < n && !overlap; i++) overlap = sorted[i] - sorted[i - 1] < NVN_INDIRECT_RESET_RECORD_BYTES;
     free(sorted);
