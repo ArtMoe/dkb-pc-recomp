@@ -66,7 +66,7 @@ static struct {
     // the 5 s log
     uint64_t t0, real, made_n, no_hist, hitch, over, crop, cut, late;
 } S;
-// S and the images are touched by vk_fg_record (the present thread) and vk_fg_release (the exit, under gfx_present.c's g_pl
+// S and the images are touched by vk_fg_record (the present thread) and vk_fg_release (the exit, under vk_present.c's g_pl
 // first: that order everywhere), so each holds this lock for its whole run; vk_fg_show copies what it needs and presents
 // without it.
 static PlatMutex fgl = PLAT_MUTEX_INIT;

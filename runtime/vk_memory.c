@@ -2045,7 +2045,7 @@ static int up_state, up_pairs;   // up_state: 0 not set up, 1 ready, -1 no times
 static float up_period;
 static volatile int64_t up_gpu_ns, up_timed, up_batches, up_wait_ns, up_bytes;
 
-// A timestamp pool of n pairs for the perf line's side timings (upload batches, gfx_present.c's blit), or NULL when
+// A timestamp pool of n pairs for the perf line's side timings (upload batches, vk_present.c's blit), or NULL when
 // the graphics queue has no 64-bit timestamps. *period: ns per tick.
 VkQueryPool vk_ts_pool(uint32_t pairs, float *period) {
     VkCtx *c = vk_ctx();

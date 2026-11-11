@@ -116,7 +116,7 @@ void vk_checkpoint_compute(VkPipeline p);
 // device-address bindings seen so far (vk_crumbs.c). Called by vk_device_fault_report for every address it prints.
 void vk_crumbs_report_address(uint64_t address);
 
-// ---- window and present (gfx_present.c). Host threads only.
+// ---- window and present (gfx_window.c, vk_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled
 // to the swapchain extent, into the acquired swapchain image and presents it. src is in layout, which is
 // VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL (its writes made visible to the transfer stage by the caller's barrier) or
@@ -168,7 +168,6 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_release(void);   // before the device goes away
 void vk_present_flip(void);
-int gfx_window_closing(void);   // the exit has started: the swapchain and the present passes are being freed
 // TOTK_FLIGHT thumbnails (GfxBackend.thumbs_enable, thumbs_read; flight.c): the present thread blits every presented
 // frame into a host-visible ring of n thumbnails.
 void vk_thumbs_enable(int n);            // before the first present; n slots of FLIGHT_THUMB_W x FLIGHT_THUMB_H
@@ -182,9 +181,6 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 // Copy of the last presented swapchain image, for probes: on, the next presents read the image back into a host buffer
 // and wait for the GPU. *px stays valid until the next present; the format is the swapchain's. Returns 0 with no frame.
-// The rectangle {x, y, w, h} of a dw x dh swapchain image a cw x ch picture is presented in (gfx_present.c,
-// TOTK_ASPECT); the rest is black.
-void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 void vk_present_capture(int on);
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 
@@ -192,12 +188,18 @@ int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 // extensions a surface needs (their count, at most max), and whether a queue family of pd can present to it.
 int gfx_window_vk_extensions(const char **out, int max);
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family);
-void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
-unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
-// GfxBackend.exit_release: waits for the queued present, then gfx_window_release_vk under the start lock.
+// The Vulkan back end's window entries (GfxBackend.window_start, window_resize, present_mode, window_hdr10, exit_wait, exit_release;
+// gfx.h). gfx_window_start calls the first under its start lock: the device, window, surface and swapchain, idempotent.
+void vk_present_window_start(void);
+void vk_present_window_resize(void);               // the window has its new size; the swapchain follows it
+const char *vk_present_mode(void);                  // the present mode the swapchain got; "" before one
+int vk_present_hdr10(void);                         // the swapchain is HDR10 now (any thread)
+// exit_wait: the queued present goes out, before gfx_window.c's start lock (the present thread may be waiting for it).
+void vk_present_exit_wait(void);
+// exit_release, under that lock: the device lets go of the window (swapchain, surface, present objects).
 void vk_present_exit_release(void);
-void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
+void vk_present_release(void);                     // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
 
 // ---- memory and textures (vk_memory.c, vk_texture.c)

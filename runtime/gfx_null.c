@@ -142,6 +142,7 @@ static void null_cpu_synced(uint64_t fence) { (void)fence; }
 // The host side: no device, so nothing to warm, save or release, no thumbnails, no counters to grow and no driver to
 // name.
 static void null_nothing(void) {}
+static int null_zero(void) { return 0; }
 static int null_shader_tool(int tool) {
     (void)tool;
     rt_logf("the shader tools need a graphics device: TOTK_GPU=null has none\n");
@@ -149,6 +150,7 @@ static int null_shader_tool(int tool) {
 }
 static void null_thumbs_enable(int n) { (void)n; }
 static int null_thumbs_read(uint64_t frame, uint8_t *rgba) { (void)frame, (void)rgba; return 0; }
+static const char *null_present_mode(void) { return "none"; }
 static const GfxExecFrame *null_exec_frame(void) {
     static const GfxExecFrame none;
     return &none;
@@ -177,9 +179,14 @@ const GfxBackend gfx_null_backend = {
     .guest_written = null_guest_written,
     .guest_read = null_guest_read,
     .cpu_synced = null_cpu_synced,
+    .window_start = null_nothing,
+    .window_resize = null_nothing,
+    .present_mode = null_present_mode,
+    .window_hdr10 = null_zero,
     .boot_async = null_nothing,
     .boot_prewarm = null_nothing,
     .save = null_nothing,
+    .exit_wait = null_nothing,
     .exit_release = null_nothing,
     .shader_tool = null_shader_tool,
     .thumbs_enable = null_thumbs_enable,

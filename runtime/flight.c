@@ -1,5 +1,5 @@
 // TOTK_FLIGHT=1 flight recorder: a ring of the last TOTK_FLIGHT_FRAMES (600) presents, one record each (interval,
-// render-thread blocked time per perf kind, event counts) and a 320x180 thumbnail each (gfx_present.c, blitted on the
+// render-thread blocked time per perf kind, event counts) and a 320x180 thumbnail each (the back end's present, blitted on the
 // GPU by the present thread). A dump goes to <dir>/<YYYYMMDD-HHMMSS>-f<frame>/: frames.tsv and f<frame>.png per
 // thumbnail, written by a background thread. Triggers: F8 while the game window has focus, a frame interval over
 // TOTK_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), and TOTK_FLIGHT_AT=<frame>[,<frame>...]. A dump holds
