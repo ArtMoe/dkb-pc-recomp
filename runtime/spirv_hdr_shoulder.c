@@ -132,7 +132,7 @@ uint32_t *spirv_hdr_shoulder(const uint32_t *w, uint64_t n, uint64_t *out_n) {
         const uint32_t *a = w + i + 1;
         if (op == OP_FUNCTION && !fn_at) fn_at = i;
         if (op == OP_ENTRY_POINT && len >= 3) fragment |= a[0] == MODEL_FRAGMENT;
-        else if (op == OP_EXT_INST_IMPORT && len >= 3 && a[0] < bound && !memcmp(a + 1, "GLSL.std.450", 13)) m.glsl = a[0];
+        else if (op == OP_EXT_INST_IMPORT && len >= 6 && a[0] < bound && !memcmp(a + 1, "GLSL.std.450", 13)) m.glsl = a[0];
         else if (op == OP_TYPE_BOOL && len == 2) boolt = a[0];
         else if (op == OP_TYPE_FLOAT && len == 3 && a[1] == 32) f32 = a[0];
         else if (op == OP_CONSTANT && len == 4 && a[1] < bound) m.is_const[a[1]] = 1, m.const_val[a[1]] = a[2];
@@ -166,7 +166,10 @@ uint32_t *spirv_hdr_shoulder(const uint32_t *w, uint64_t n, uint64_t *out_n) {
                     !loads_uniform(&m, fmin[6], 4, 0, &u, &member, &row4, &comp0, &ptr_type))
                     goto next;
                 const uint32_t *mul = def_of(&m, fmax[6], OP_FMUL);
-                if (!mul || mul[1] != f32 || fmax[5] >= bound || !m.is_const[fmax[5]] || m.const_val[fmax[5]] != 0) goto next;
+                // five words: the operands below are read, and the rewrite copies the whole instruction
+                if (!mul || (mul[0] >> 16) != 5 || mul[1] != f32 || fmax[5] >= bound || !m.is_const[fmax[5]] ||
+                    m.const_val[fmax[5]] != 0)
+                    goto next;
                 uint32_t v = loaded_fn_var(&m, mul[4]);
                 if (!v || (yvar && v != yvar) || mul_at[c]) goto next;
                 yvar = v, mul_at[c] = mul - w;
