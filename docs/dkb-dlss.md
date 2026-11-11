@@ -19,7 +19,9 @@ makes the inputs DLSS needs.
   jittered. The jitter stops when DLSS has not run for a few frames.
 - Depth. The scene depth is noted at the 3D draws: the passes whose draws read the camera block (vertex constant bank
   c3, 0x980 bytes) and whose depth target is as large as the upscaler's input. The game's depth is not reversed
-  (near 1, far 5000). This block and its layout come from a frame dump of 1.0.0 only; on 3.2.0 they are unverified.
+  (near 1, far 5000). This block and its layout come from a frame dump of 1.0.0. On 3.2.0 the block read in play has the same layout
+  (an orthonormal view, the view-projection as their product, a projection of near 1 and far 5000), the upscaler's
+  shaders have the same hashes, and a 180 s run had depth and motion vectors on 10799 of 10800 DLSS frames.
   The camera is read from the copy of the uniform blocks taken at the submit call (`runtime/vk_usnap.c`); a frame
   whose block was not copied runs spatially.
 - Motion vectors. The camera block holds the view-projection matrix. A small compute pass
