@@ -22,7 +22,9 @@ def source(draw):
     recorder = (ROOT / 'runtime/vk_rec.c').read_text()
     context_start = draw.index('static struct {', draw.index('// State of the command buffer being recorded'))
     context_end = draw.index('// The bound-slot bytes of VkExec', context_start)
-    context = draw[context_start:context_end]
+    # The context carries the switches of the descriptor memos, most of which bind_resources does not ask.
+    context = ('#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Wunused-function"\n' +
+               draw[context_start:context_end] + '\n#pragma GCC diagnostic pop\n')
     declarations = '\n'.join(function(recorder, prefix) + suffix for prefix, suffix in (
         ('typedef struct { PFN_vkCmdPushDescriptorSetWithTemplateKHR fn;', ' A_PushTpl;'),
         ('typedef struct { PFN_vkCmdPushDescriptorSetKHR fn;', ' A_Push;')))
@@ -65,6 +67,7 @@ def main():
         exe = out / ('fixture' + opt + ('.exe' if os.name == 'nt' else ''))
         command = [args.cc, '-std=gnu11', opt, '-Wall', '-Wextra', '-Werror',
                    '-Wno-missing-field-initializers',  # unchanged production BS/RS initializers
+                   '-Wno-unused-variable', '-Wno-unused-const-variable',  # context statics the binder does not read
                    '-I', str(ROOT / 'runtime'), '-I', str(args.deps / 'include'),
                    '-I', str(args.deps / 'include/vma'), str(src), '-o', str(exe)]
         compiled = subprocess.run(command, capture_output=True, text=True, timeout=60)

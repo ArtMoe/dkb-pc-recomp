@@ -130,6 +130,7 @@ static struct {
     VkBuffer c0_buf[4];
     VkDeviceSize c0_off[4];
     int c0_valid[4];
+    uint32_t c0_sser[4];                 // ssbo_serial when c0[k] was last checked
     struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; Nvn2C0Layout lay; uint8_t has_lay;
              uint32_t roots[NVN2_ROOT_TABLES][NVN2_ROOT_WORDS]; } c0_in[4];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
@@ -150,11 +151,50 @@ static struct {
 #define DS_SIG_BYTES (MAX_DESC * sizeof(VkDescSlot))
 static struct { uint32_t n[2], pn[2]; uint8_t sig[2][DS_SIG_BYTES], psig[2][DS_SIG_BYTES]; } DS;
 
+// The switches of the descriptor memo work. Each is off by default, which is bananza's behaviour, and "ab" turns it on
+// in the B blocks only (TOTK_AB), so its gain is measured inside one run. Each one is safe to flip between draws: what
+// it remembers is checked or reset whichever way it was last set.
+static int knob_on(int *mode, const char *name) {
+    if (*mode < 0) *mode = rt_knob(name, "0");
+    return RT_KNOB_ON(*mode);
+}
+// TOTK_DESC_C0_SERIAL: a graphics stage's c0 is reused while no storage buffer of the stage was bound (ssbo_serial).
+static int c0_serial_on(void) {
+    static int mode = -1;
+    return knob_on(&mode, "DESC_C0_SERIAL");
+}
+// TOTK_DESC_TD_HASH: the texture descriptor memo hashes the resource type into its index.
+static int td_hash_on(void) {
+    static int mode = -1;
+    return knob_on(&mode, "DESC_TD_HASH");
+}
+// TOTK_DESC_STAGE_ORIGIN: the stage memo keeps each shader's NVN 2 origin and has 2048 entries instead of 512.
+static int stage_origin_on(void) {
+    static int mode = -1;
+    return knob_on(&mode, "DESC_STAGE_ORIGIN");
+}
+
 // TOTK_BIND_STATS counters (bind_stats).
 static struct {
     int on;
     uint64_t draws, bind[2], desc[2], push, push_skip, set_new, set_reuse, ac_miss, same_prog, same_all, bind_skip;
 } BS = {-1};
+
+// TOTK_BIND_STATS: which input of bind_sig's header differs from the previous draw's, one counter per field, plus why
+// the body compare ran. A field that differs on most draws names what forces the rebuild that TOTK_BIND_SKIP cannot
+// skip.
+enum {
+    BSF_INFO, BSF_PROG, BSF_SERIAL, BSF_POOLS, BSF_TEXGEN, BSF_SAMPGEN, BSF_MEMGEN, BSF_FBL, BSF_SUPPORT, BSF_C0,
+    BSF_UBO, BSF_N
+};
+static struct {
+    uint64_t n, hdr, body, forced, field[BSF_N], pipe_chg, gen_chg, cls[7];   // cls[]: which bound state differed first
+} BSF;
+static const char *const BSF_NAME[BSF_N] = {
+    "pipeline", "program", "program serial", "pool tables", "texture generation", "sampler generation",
+    "memory/snapshot generation", "framebuffers", "support", "base instance", "uniform pointers"};
+static const char *const RS_CLS_NAME[7] = {"storage table", "uniform ranges", "texture handles", "image handles",
+                                           "pushes", "push set", "other"};
 
 // The inputs of the last graphics bind_resources (bind_sig) and what its build counted for the traffic census, which a
 // skipped build counts again. RS_BYTES bounds the bound-slot bytes a pipeline reads (RsList): per binding at most one
@@ -193,6 +233,7 @@ static const VkPipeInfo *rs_last;        // the last lookup
 static const RsList *rs_last_l;
 
 static uint32_t c0_dim[3], c0_binst;     // the dispatch size and base instance of the draw or dispatch being bound
+static uint32_t ssbo_serial[6];          // bumped per stage by OP_BIND_SSBO, for c0_info's fast graphics check
 static uint64_t bind_gen = 1;            // bumped by every bind op that writes ex->prog, ubo, ssbo, tex or img
 
 static void cb_done(void *arg) {   // completion thread
@@ -726,17 +767,31 @@ static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, 
     return 0;
 }
 
-// Which shader of a program serves each NVN stage, and its code length, per program serial (new at every
-// nvnProgramSetShaders): the scan reads two words of every stage's control block, cold guest cache lines, and runs
-// several times a draw. Direct-mapped; a collision only scans again.
-#define STAGEM_N 512
-static struct { uint64_t serial; int8_t idx[6]; uint32_t len[6]; } stagem[STAGEM_N];
+// Which shader of a program serves each NVN stage, its code length and its NVN 2 origin, per program serial (new at
+// every nvnProgramSetShaders): the scan reads two words of every stage's control block, cold guest cache lines, and
+// nvn2_origin locks a mutex and searches a hash map several times a draw. Direct-mapped; a collision only scans again.
+// With TOTK_DESC_STAGE_ORIGIN off it uses the first 512 entries and keeps no origin: nvn2_origin runs at every ask.
+#define STAGEM_N 2048
+static struct {
+    uint64_t serial;
+    int8_t idx[6];
+    uint8_t has_origin;
+    uint32_t len[6];
+    uint64_t origin[6];
+} stagem[STAGEM_N];
 
-static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const uint8_t **code, uint32_t *len) {
-    if (!p->serial || (unsigned)nvn_stage >= 6) return find_stage_scan(p, nvn_stage, ctl, code, len);
-    typeof(stagem[0]) *m = &stagem[p->serial * 0x9E3779B97F4A7C15ull >> 55];
+static int find_stage_origin(const prog_t *p, int nvn_stage, const uint8_t **ctl, const uint8_t **code, uint32_t *len,
+                             uint64_t *origin) {
+    if (!p->serial || (unsigned)nvn_stage >= 6) {
+        if (!find_stage_scan(p, nvn_stage, ctl, code, len)) return 0;
+        if (origin) *origin = nvn2_origin(*code);
+        return 1;
+    }
+    int memo = stage_origin_on();
+    typeof(stagem[0]) *m = &stagem[p->serial * 0x9E3779B97F4A7C15ull >> (memo ? 53 : 55)];
     if (m->serial != p->serial) {
         m->serial = p->serial;
+        m->has_origin = 0;
         memset(m->idx, -1, sizeof m->idx);
         for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
             const uint8_t *c = p->sd[i].control;
@@ -746,10 +801,27 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
             if (st < 6 && m->idx[st] < 0) m->idx[st] = (int8_t)i, memcpy(&m->len[st], c + 0x704, 4);
         }
     }
+    if (memo && origin && !m->has_origin) {   // the origins of an entry are looked up at its first ask for one
+        for (int st = 0; st < 6; st++)
+            m->origin[st] = m->idx[st] < 0 ? 0 : nvn2_origin((const uint8_t *)(uintptr_t)p->sd[m->idx[st]].data);
+        m->has_origin = 1;
+    }
     int i = m->idx[nvn_stage];
     if (i < 0) return 0;
     *ctl = p->sd[i].control, *code = (const uint8_t *)(uintptr_t)p->sd[i].data, *len = m->len[nvn_stage];
+    if (origin) *origin = memo ? m->origin[nvn_stage] : nvn2_origin(*code);
     return 1;
+}
+
+static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const uint8_t **code, uint32_t *len) {
+    return find_stage_origin(p, nvn_stage, ctl, code, len, NULL);
+}
+
+static uint64_t stage_origin(const prog_t *p, int nvn_stage) {
+    const uint8_t *ctl, *code;
+    uint32_t len;
+    uint64_t o = 0;
+    return p && find_stage_origin(p, nvn_stage, &ctl, &code, &len, &o) ? o : 0;
 }
 
 // Texture and image types of a stage's first 32 slots, each kept with the handle and the generation and slot token it
@@ -906,11 +978,13 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
 static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pending, int await) {
     const uint8_t *ctl, *code;
     uint32_t len;
+    uint64_t origin = 0;
     *present = 0;
     if (pending) *pending = 0;
-    if (!ex->prog || !find_stage(ex->prog, st, &ctl, &code, &len)) return NULL;
+    int want_origin = st == NVN_STAGE_GS && native_gs_on();
+    if (!ex->prog || !find_stage_origin(ex->prog, st, &ctl, &code, &len, want_origin ? &origin : NULL)) return NULL;
     *present = 1;
-    if (st == NVN_STAGE_GS && native_gs_on() && nvn2_origin(code)) {
+    if (want_origin && origin) {
         if (!native_gs_vs || !native_gs_fs) {   // its varyings follow from the other stages, which are still pending
             if (pending) *pending = 1;
             return NULL;
@@ -1075,7 +1149,28 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
         rt_fatal("vk_exec: synthetic c0 is unavailable for stage %d", st);
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : st == NVN_STAGE_GS ? 3 : 2;
     // vk_c0_fill reads buffer bindings, compute root words and dispatch size, or the graphics base instance:
-    // equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
+    // equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed. Graphics stages read only
+    // ex->ssbo[st] and c0_binst, so ssbo_serial avoids building or comparing the 2.8 KiB compute input struct
+    // (TOTK_DESC_C0_SERIAL). Both paths leave B.c0_in[k] with the same ssbo and binst, so either may follow the other.
+    if (st != NVN_STAGE_CS && c0_serial_on()) {
+        uint32_t sser = ssbo_serial[st];
+        if (B.c0_valid[k] && B.c0_in[k].binst == c0_binst &&
+            (B.c0_sser[k] == sser || !memcmp(B.c0_in[k].ssbo, ex->ssbo[st], sizeof ex->ssbo[st]))) {
+            B.c0_sser[k] = sser;
+            return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
+        }
+        memcpy(B.c0_in[k].ssbo, ex->ssbo[st], sizeof ex->ssbo[st]);
+        B.c0_in[k].binst = c0_binst;
+        B.c0_sser[k] = sser;
+        uint8_t tmp[VK_C0_BYTES];
+        vk_c0_fill(tmp, st, ex->ssbo[st], ex->ubo[st], c0_dim, c0_binst);
+        if (!B.c0_valid[k] || memcmp(tmp, B.c0[k], VK_C0_BYTES)) {
+            memcpy(scratch(ex, VK_C0_BYTES, &B.c0_buf[k], &B.c0_off[k]), tmp, VK_C0_BYTES);
+            memcpy(B.c0[k], tmp, VK_C0_BYTES);
+            B.c0_valid[k] = 1;
+        }
+        return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
+    }
     typeof(B.c0_in[0]) in;
     memset(&in, 0, sizeof in);
     memcpy(in.ssbo, ex->ssbo[st], sizeof in.ssbo);
@@ -1290,8 +1385,9 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
                 note_written(ex, b->addr - lead, bi.range);
                 const uint8_t *ctl, *code;
                 uint32_t len;
-                if (vk_sync_noting() && ex->prog && find_stage(ex->prog, st, &ctl, &code, &len))
-                    vk_sync_note_write(b->addr - lead, bi.range, nvn2_origin(code));
+                uint64_t o;
+                if (vk_sync_noting() && ex->prog && find_stage_origin(ex->prog, st, &ctl, &code, &len, &o))
+                    vk_sync_note_write(b->addr - lead, bi.range, o);
             }
             return bi;
         }
@@ -1488,17 +1584,26 @@ static struct {
     VkDescriptorImageInfo out;
 } TD[TD_N];
 
-static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
-                            VkDescriptorImageInfo *out) {
-    descriptor_state(ex);
+static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, uint32_t gen,
+                            uint32_t ep, uint32_t sg, int *locked, VkDescriptorImageInfo *out) {
     int td_on = td_mode();
     VkImage image;
-    if (!h || storage || !td_on) return tex_info_full(ex, r, h, storage, separate, out, &image);
-    uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();   // before any lookup
-    typeof(TD[0]) *m = &TD[(h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate) >> 51];
+    if (!h || storage || !td_on) {
+        if (h && !*locked) vk_texture_lock(), *locked = 1;
+        tex_info_full(ex, r, h, storage, separate, out, &image);
+        return;
+    }
+    // The type and the separate flag go in above the handle's 32 bits, before the multiply: xored into the product's
+    // low bits they never reached the index, and a handle read through two resource types evicted itself at every
+    // other lookup (half of all misses in Bananza's field).
+    // TOTK_DESC_TD_HASH off: bananza's index, with the type and the flag xored in after the multiply.
+    uint64_t key = td_hash_on() ? (h ^ (uint64_t)r->type << 32 ^ (uint64_t)separate << 48) * 0x9E3779B97F4A7C15ull
+                                : h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate;
+    typeof(TD[0]) *m = &TD[key >> 51];
     if (m->valid && m->context == descriptor_serial && m->h == h && m->type == r->type && m->separate == separate && m->sgen == sg &&
         slot_still(ex, &m->gen, m->tok, h, gen)) {
         if (m->epoch != ep) {   // the slot's first binding in this submission: only its storage check is due
+            if (!*locked) vk_texture_lock(), *locked = 1;
             vk_texture_by_id_locked(&ex->tex_pool, (int)(h & 0xfffff), NULL, NULL);
             m->epoch = ep;
         }
@@ -1506,6 +1611,7 @@ static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int s
         out->imageLayout = m->image && ex->nfbl && in_fbl(ex, m->image) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
                                                                           : VK_IMAGE_LAYOUT_GENERAL;
         if (td_on == 2) {
+            if (!*locked) vk_texture_lock(), *locked = 1;
             VkDescriptorImageInfo full;
             tex_info_full(ex, r, h, storage, separate, &full, &image);
             if (full.sampler != out->sampler || full.imageView != out->imageView || full.imageLayout != out->imageLayout)
@@ -1515,6 +1621,7 @@ static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int s
         return;
     }
     uint64_t tok = token_of(ex, h);   // before the lookup
+    if (!*locked) vk_texture_lock(), *locked = 1;
     tex_info_full(ex, r, h, storage, separate, out, &image);
     *m = (typeof(*m)){.context = descriptor_serial, .h = h, .tok = tok, .gen = gen, .epoch = ep, .sgen = sg, .type = r->type,
                       .separate = (uint8_t)separate, .valid = 1, .image = image, .out = *out};
@@ -1711,11 +1818,13 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
 
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin.
-static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out) {
-    tex_info_lookup(ex, r, h, storage, separate, out);
+static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, uint32_t gen,
+                     uint32_t ep, uint32_t sg, int *locked, VkDescriptorImageInfo *out) {
+    tex_info_lookup(ex, r, h, storage, separate, gen, ep, sg, locked, out);
     if (!twin_dispatch || storage || separate || !h || !(r->type & 0x400)) return;
     VkImageViewType vt = res_view_type(r->type);
     if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY) return;
+    if (!*locked) vk_texture_lock(), *locked = 1;
     const VkTexImage *img = vk_texture_by_id_locked(&ex->tex_pool, (int)(h & 0xfffff), NULL, NULL);
     Twin *t = img ? twin_update(ex, img) : NULL;
     VkImageView v = t ? t->view[vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY] : VK_NULL_HANDLE;
@@ -1801,6 +1910,27 @@ static void bind_stats(const VkPipeInfo *info) {
                "same program and state as the draw before %.3f, also same buffers %.3f; descriptor builds skipped %.3f",
                BS.push / d, BS.push_skip / d, BS.set_new / d, BS.set_reuse / d, BS.ac_miss / d, BS.same_prog / d,
                BS.same_all / d, BS.bind_skip / d);
+        if (BSF.n) {
+            double s = (double)BSF.n;
+            char f[512];
+            size_t at = 0;
+            for (int i = 0; i < BSF_N; i++)
+                if (BSF.field[i] && at < sizeof f)
+                    at += (size_t)snprintf(f + at, sizeof f - at, "%s%s %.3f", at ? ", " : "", BSF_NAME[i],
+                                           BSF.field[i] / s);
+            rt_log("vk_exec: descriptor rebuilds: header %.3f, body %.3f, of %llu builds "
+                   "(body compared after a bind op %.3f); rebuilt on a new pipeline %.3f, on a bind op %.3f; "
+                   "header fields that differed: %s",
+                   BSF.hdr / s, BSF.body / s, (unsigned long long)BSF.n, BSF.forced / s, BSF.pipe_chg / s,
+                   BSF.gen_chg / s, at ? f : "none");
+            char g[256];
+            size_t gt = 0;
+            for (int i = 0; i < 7; i++)
+                if (BSF.cls[i] && gt < sizeof g)
+                    gt += (size_t)snprintf(g + gt, sizeof g - gt, "%s%s %.3f", gt ? ", " : "", RS_CLS_NAME[i],
+                                           BSF.cls[i] / s);
+            rt_log("vk_exec: descriptor rebuilds: bound state that differed first: %s", gt ? g : "none");
+        }
     }
 }
 
@@ -1866,6 +1996,18 @@ static int bind_skip_on(void) {
     }
     return RS.on;
 }
+
+// Rebuilding only the bindings whose bound ranges changed was tried and removed, and this is the record of why,
+// because the idea keeps looking free: bind_sig's inputs do not determine the descriptors. With the same pipeline, an
+// unchanged header, the same bound bytes, one submission and one non-volatile previous build, the same binding still
+// resolved to a different VkDescriptorBufferInfo in three independent ways, each found by a checking build that
+// recomputed everything and compared (a draw of program 5319, fragment UBO slot 3, buffer equal and offset moved by
+// one range):
+//   1. per-submission scratch: the compiler-constant bank, the slot 17 block and c0 get a new range per submission;
+//   2. rs_add merges adjacent ranges, so a binding whose slots sit next to another's owns no range to compare;
+//   3. the snapshot arena is rebuilt per submission part and hands the same guest bytes a new offset.
+// So the signature is not a descriptor identity, and a partial rebuild cannot be justified from it. TOTK_BIND_SKIP
+// stays all-or-nothing for that reason.
 
 static void rs_add(RsRange *r, uint32_t *n, const VkExec *ex, const void *at, size_t len) {
     uint32_t off = (uint32_t)((const uint8_t *)at - (const uint8_t *)ex);
@@ -1933,48 +2075,80 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
 // The signature of a graphics draw's descriptor inputs into RS; 1 when it equals the stored one. The bound-slot bytes
 // are compared only when a bind op ran since they were stored or the pipeline changed: otherwise they are the same.
 // Check mode compares them anyway and stops when the bind op generation said they could not differ but they do.
+// TOTK_BIND_STATS: which part of VkExec a differing bound range starts in, so the rebuild names its cause.
+static int rs_class(const VkExec *ex, const RsRange *r) {
+    const uint8_t *p = (const uint8_t *)ex + r->off;
+    const struct { const void *at; size_t len; } m[6] = {
+        {&ex->ssbo[0][0], sizeof ex->ssbo}, {&ex->ubo[0][0], sizeof ex->ubo}, {&ex->tex[0][0], sizeof ex->tex},
+        {&ex->img[0][0], sizeof ex->img},   {&ex->push[0][0][0], sizeof ex->push},
+        {&ex->push_set[0][0], sizeof ex->push_set}};
+    for (int i = 0; i < 6; i++)
+        if (p >= (const uint8_t *)m[i].at && p < (const uint8_t *)m[i].at + m[i].len) return i;
+    return 6;
+}
+
 static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     const RsList *l = rs_list(ex, info);
     if (!l->ok) return RS.hn = 0, RS.info = NULL, 0;
     uint64_t *h = RS.h, diff = 0;
     uint32_t n = 0;
-#define PUT(v) do { uint64_t v_ = (uint64_t)(v); diff |= h[n] ^ v_; h[n++] = v_; } while (0)
-    PUT((uintptr_t)info);
-    PUT((uintptr_t)ex->prog);
-    PUT(ex->prog->serial);
-    PUT(ex->tex_pool.addr);
-    PUT(ex->tex_pool.count);
-    PUT(ex->samp_pool.addr);
-    PUT(ex->samp_pool.count);
-    PUT((uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
-    PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
-    PUT(vk_mem_gen() + vk_usnap_gen());   // both only grow
-    for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
+    int st = bind_stats_on();
+#define PUT(f, v)                                                                                                  \
+    do {                                                                                                           \
+        uint64_t v_ = (uint64_t)(v), d_ = h[n] ^ v_;                                                               \
+        if (st && d_) BSF.field[f]++;                                                                              \
+        diff |= d_;                                                                                                \
+        h[n++] = v_;                                                                                               \
+    } while (0)
+    PUT(BSF_INFO, (uintptr_t)info);
+    PUT(BSF_PROG, (uintptr_t)ex->prog);
+    PUT(BSF_SERIAL, ex->prog->serial);
+    PUT(BSF_POOLS, ex->tex_pool.addr);
+    PUT(BSF_POOLS, ex->tex_pool.count);
+    PUT(BSF_POOLS, ex->samp_pool.addr);
+    PUT(BSF_POOLS, ex->samp_pool.count);
+    PUT(BSF_TEXGEN, (uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
+    PUT(BSF_SAMPGEN, (uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
+    PUT(BSF_MEMGEN, vk_mem_gen() + vk_usnap_gen());   // both only grow
+    for (int i = 0; i < ex->nfbl && i < 9; i++) PUT(BSF_FBL, (uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
         float in[3];
         support_in(ex, in);
         uint64_t a;
         uint32_t ps;
         memcpy(&a, in, 8), memcpy(&ps, &in[2], 4);
-        PUT(a);
-        PUT(ps);
+        PUT(BSF_SUPPORT, a);
+        PUT(BSF_SUPPORT, ps);
     }
-    if (l->c0) PUT(c0_binst);
-    for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
+    if (l->c0) PUT(BSF_C0, c0_binst);
+    for (int i = 0; i < l->np; i++) PUT(BSF_UBO, ubo_ptr(ex, l->p[i].st, l->p[i].res));
 #undef PUT
     diff |= n != RS.hn;
     RS.hn = n;
     int fast = RS.info == info && RS.gen == bind_gen;
+    if (st) {
+        BSF.n++;
+        if (diff) BSF.hdr++;
+    }
+    if (st && !fast) {
+        if (RS.info != info) BSF.pipe_chg++;
+        else BSF.gen_chg++;
+    }
     if (fast && RS.on != 2) return !diff;
     const uint8_t *e = (const uint8_t *)ex;
     uint8_t *d = RS.body;
-    int bd = 0;
+    int bd = diff != 0 && RS.on != 2;
+    if (st && !fast) BSF.forced++;   // a bind op ran: the body has to be compared
     for (uint32_t i = 0; i < l->n; i++) {
         const RsRange *r = &l->r[i];
-        if (!bd && memcmp(d, e + r->off, r->len)) bd = 1;
+        if (!bd && memcmp(d, e + r->off, r->len)) {
+            bd = 1;
+            if (st) BSF.cls[rs_class(ex, r)]++;
+        }
         if (bd) memcpy(d, e + r->off, r->len);
         d += r->len;
     }
+    if (st && bd) BSF.body++;
     if (fast && bd) rt_fatal("vk_exec: descriptor build skip check: bound slots changed without a bind op");
     RS.info = info, RS.gen = bind_gen;
     return !diff && !bd;
@@ -2031,6 +2205,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         if (i1 > lo[s] && !info->tpl[s]) need_w = 1;
     }
     uint32_t nd = 0;
+    int tex_locked = 0;
     typedef struct { const GfxShaderRes *r; VkDescSlot *o; int st, img; uint32_t cnt; } TexPend;
     static TexPend tp[MAX_BINDINGS]; // replay thread only, like w and d
     int ntp = 0;
@@ -2095,6 +2270,9 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
     if (ntp) {
         DP_MARK(DP_SIG);
         vk_texture_lock();   // tex_info looks up with the texture lock held: once for the draw's texture bindings
+        tex_locked = 1;
+        descriptor_state(ex);   // the generations and the epoch are read under the lock, before any lookup
+        uint32_t tex_gen = vk_texture_slots_gen(), tex_ep = vk_texture_epoch(), samp_sg = vk_sampler_gen();
         for (int t = 0; t < ntp; t++) {
             const TexPend *q = &tp[t];
             for (uint32_t k = 0; k < q->cnt; k++) {
@@ -2102,13 +2280,14 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                 uint64_t h = 0;
                 if (q->img) h = slot >= 0 && slot < 32 ? ex->img[q->st][slot] : 0;
                 else h = slot >= 0 && slot < 128 ? ex->tex[q->st][slot] : 0;
-                tex_info(ex, q->r, h, q->img, q->r->separate, &q->o[k].image);
+                tex_info(ex, q->r, h, q->img, q->r->separate, tex_gen, tex_ep, samp_sg, &tex_locked, &q->o[k].image);
                 q->o[k].w[2] = (uint32_t)q->o[k].image.imageLayout;   // zero the tail padding
             }
         }
         vk_texture_unlock();
         DP_MARK(DP_TEX);
     }
+    tex_locked = 0;
     // Set 1's first descriptor is noted when the loop reaches its first binding. A set 1 without bindings (a fragment
     // stage with no resources) starts at the end instead, so set 0's byte count (d0[1] - d0[0]) covers its descriptors.
     // Left at 0, it pushed set 0's template with 0 bytes copied into the recording, and the driver read the
@@ -2239,11 +2418,9 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     int ck = vk_ctx()->has_nv_checkpoints && vk_checkpoints_on(), crumb = vk_crumb_bind_on();
     if (ck || crumb) {   // DKB_GPU_CHECKPOINTS=1 or TOTK_CRUMB_BIND=1: name the shaders the checkpoint's pipeline holds
         uint64_t o[3] = {0};
-        const uint8_t *ctl, *code;
-        uint32_t len;
         static const int stages[2][3] = {{NVN_STAGE_VS, NVN_STAGE_GS, NVN_STAGE_FS}, {NVN_STAGE_CS, -1, -1}};
         for (int i = 0; i < 3 && ex->prog; i++)
-            if (stages[k][i] >= 0 && find_stage(ex->prog, stages[k][i], &ctl, &code, &len)) o[i] = nvn2_origin(code);
+            if (stages[k][i] >= 0) o[i] = stage_origin(ex->prog, stages[k][i]);
         if (ck) {
             vk_checkpoint_note(p, o[0], o[1], o[2]);
             rec_checkpoint(ex->cb, p);
@@ -2409,9 +2586,7 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
         if (on && !nv) rt_log("vk: TOTK_FIX_VS_FAULT=all: the light quad skip (#9) also runs on this non-NVIDIA GPU");
     }
     if (!on || !vs || !fs) return 0;
-    const uint8_t *ctl, *code = NULL;
-    uint32_t len;
-    if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len) && nvn2_origin(code) == 0xcae0ef8e9fe9147full) {
+    if (stage_origin(ex->prog, NVN_STAGE_VS) == 0xcae0ef8e9fe9147full) {
         warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage cae0ef8e9fe9147f is skipped (#9)");
         return 1;
     }
@@ -2441,10 +2616,8 @@ static int skip_listed(const VkExec *ex, int stage, SkipList *sl, const char *va
         }
     }
     if (!sl->n) return 0;
-    const uint8_t *ctl, *code = NULL;
-    uint32_t len;
-    if (!find_stage(ex->prog, stage, &ctl, &code, &len)) return 0;
-    uint64_t o = nvn2_origin(code);
+    uint64_t o = stage_origin(ex->prog, stage);
+    if (!o) return 0;
     for (int i = 0; i < sl->n; i++)
         if (sl->list[i] == o) return warn_once(warn, msg), 1;
     return 0;
@@ -2464,16 +2637,24 @@ static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *
 
 // Numeric handles are relative to the active descriptor tables. Keep the per-handle memos only while those tables
 // and their address mappings stay unchanged. A sampler table switch also changes combined image descriptors.
+// The mappings are vk_mem_pool_gen's: vk_mem_gen also moves at every submission's start and with the buffer mirrors,
+// which no descriptor key reads, and under it every memo here started each submission empty.
+// TOTK_DESC_KEEP=0 keys them on vk_mem_gen as before, so that they start every submission empty again; ab alternates
+// the two with the A/B blocks, which is how the gain of keeping them is measured inside one run.
 static void descriptor_state(VkExec *ex) {
-    static struct { const VkExec *ex; dpool_ref tex, samp; uint64_t mem_gen; uint32_t slots_gen; } last;
-    uint64_t mg = vk_mem_gen();
+    static struct { const VkExec *ex; dpool_ref tex, samp; uint64_t pool_gen; uint32_t slots_gen; int keep; } last;
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("DESC_KEEP", "1");
+    int keep = RT_KNOB_ON(mode);
+    uint64_t mg = keep ? vk_mem_pool_gen() : vk_mem_gen();
     uint32_t sg = vk_texture_slots_gen();
     if (last.ex != ex || last.tex.addr != ex->tex_pool.addr || last.tex.count != ex->tex_pool.count ||
-        last.samp.addr != ex->samp_pool.addr || last.samp.count != ex->samp_pool.count || last.mem_gen != mg) {
+        last.samp.addr != ex->samp_pool.addr || last.samp.count != ex->samp_pool.count || last.pool_gen != mg ||
+        last.keep != keep) {
         if (!++descriptor_serial) rt_fatal("vk_exec: descriptor context serial exhausted");
         SM.valid = 0;
         ex->fb_fs = NULL;
-        last.ex = ex, last.tex = ex->tex_pool, last.samp = ex->samp_pool, last.mem_gen = mg;
+        last.ex = ex, last.tex = ex->tex_pool, last.samp = ex->samp_pool, last.pool_gen = mg, last.keep = keep;
     }
     if (last.slots_gen != sg) ex->fb_fs = NULL;
     last.slots_gen = sg;
@@ -2536,8 +2717,9 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
     if (native_gs_on() && ex->prog) {   // native failures keep VS/FS; ordinary stages retain their separate opt-in
         const uint8_t *ctl, *code, *fctl, *fcode;
         uint32_t len, flen, sph[5];
-        if (!find_stage(ex->prog, NVN_STAGE_GS, &ctl, &code, &len)) return 0;
-        if (nvn2_origin(code)) {
+        uint64_t origin = 0;
+        if (!find_stage_origin(ex->prog, NVN_STAGE_GS, &ctl, &code, &len, &origin)) return 0;
+        if (origin) {
             if (len < 0x30 + 0x60 || !find_stage(ex->prog, NVN_STAGE_FS, &fctl, &fcode, &flen) ||
                 vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) return 0;
             memcpy(sph, code + 0x30, sizeof sph);
@@ -2786,11 +2968,9 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
 // (vk_sync.c vk_sync_note). kind: 0 draw, 1 indirect draw, 2 dispatch, 3 indirect dispatch.
 static void note_work(const VkExec *ex, int kind, uint64_t work) {
     if (!vk_sync_noting() || !ex->prog) return;
-    const uint8_t *ctl, *code;
-    uint32_t len;
     int cs = kind >= 2;
-    uint64_t a = find_stage(ex->prog, cs ? NVN_STAGE_CS : NVN_STAGE_VS, &ctl, &code, &len) ? nvn2_origin(code) : 0;
-    uint64_t b = !cs && find_stage(ex->prog, NVN_STAGE_FS, &ctl, &code, &len) ? nvn2_origin(code) : 0;
+    uint64_t a = stage_origin(ex->prog, cs ? NVN_STAGE_CS : NVN_STAGE_VS);
+    uint64_t b = !cs ? stage_origin(ex->prog, NVN_STAGE_FS) : 0;
     vk_sync_note(kind, a, b, work);
 }
 
@@ -2812,10 +2992,8 @@ static int indirect_reset_draw(VkExec *ex, const p_draw *d) {
     if (!on || !c0_on() || ex->render_disabled ||
         !ex->prog || ex->prog->nstage != 2 || d->prim != NVN_DRAW_PRIMITIVE_POINTS ||
         d->count <= 0 || d->first < 0 || d->base_instance || d->instances != 1) return 0;
-    const uint8_t *ctl, *code;
-    uint32_t length;
-    if (!find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &length) || nvn2_origin(code) != 0xe78abde51f2d6bfaull ||
-        !find_stage(ex->prog, NVN_STAGE_FS, &ctl, &code, &length) || nvn2_origin(code) != 0x57b0d7b4959f03c0ull) return 0;
+    if (stage_origin(ex->prog, NVN_STAGE_VS) != 0xe78abde51f2d6bfaull ||
+        stage_origin(ex->prog, NVN_STAGE_FS) != 0x57b0d7b4959f03c0ull) return 0;
     const p_bind_buf *list = &ex->ssbo[NVN_STAGE_VS][0];
     // c0_table encodes the binding's size as u32 at +0x118; use the same extent, including its zero rejection.
     if (!vk_exec_reset_indirect(ex, list->addr, (uint32_t)list->size, d->first, d->count)) {
@@ -3377,8 +3555,10 @@ static void op_draw_impl(VkExec *ex, uint32_t op, const void *payload) {
     }
     case OP_BIND_SSBO: {
         const p_bind_buf *b = payload;
-        if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16) ex->ssbo[b->stage][b->index] = *b;
-        else {   // past the table: dropped (NVN 2 binds more storage buffers per stage than NVN 1's 16)
+        if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16) {
+            ex->ssbo[b->stage][b->index] = *b;
+            ssbo_serial[b->stage]++;
+        } else {   // past the table: dropped (NVN 2 binds more storage buffers per stage than NVN 1's 16)
             static uint64_t seen[6];
             if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 64 && !(seen[b->stage] >> b->index & 1))
                 seen[b->stage] |= 1ull << b->index, rt_log("vk: storage buffer %d of stage %d dropped", b->index, b->stage);
