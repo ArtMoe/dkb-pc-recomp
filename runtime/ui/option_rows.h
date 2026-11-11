@@ -40,8 +40,8 @@ void opt_text(UiTextId text, bool warn = false);
 // inverted: the row shows "on" while the key is 0 (a setting whose key names the opposite).
 bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted = false);
 // One name per value of the key's cfg_meta values list, in its order. When the key has no fixed default (an empty
-// def), names[0] is the automatic choice (the key unset) and names[1..] follow the values. note: a short line under
-// the value in place of the "default" mark (NULL: none).
+// def), names[0] is the automatic choice (the key unset) and names[1..] follow the values. note: a short status
+// under the label (NULL: none). A/click opens the list; left/right steps through it directly.
 bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, UiTextId desc,
                 const char *note = nullptr);
 // A choice over a list the caller builds (devices, window sizes): values[i] is written, names[i] shown; "" means the key

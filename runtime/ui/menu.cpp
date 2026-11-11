@@ -255,6 +255,9 @@ static void style_init(ImGuiStyle &s, bool dk) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     if (dk) style_dk(s);
+    c[ImGuiCol_Header] = c[ImGuiCol_Button];
+    c[ImGuiCol_HeaderHovered] = c[ImGuiCol_ButtonHovered];
+    c[ImGuiCol_HeaderActive] = c[ImGuiCol_ButtonActive];
 }
 
 static void make_context(void) {
@@ -1034,7 +1037,7 @@ static int g_focus_page = -1;   // this tab's first row takes the cursor once it
 
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
-static void layout_menu(uint32_t w, uint32_t h, float scale) {
+static void layout_menu(uint32_t w, uint32_t h, float scale, bool had_popup) {
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
     float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1052,7 +1055,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         ImGui::TextDisabled("%s", version);
     }
 
-    int step = g_modal || binds_modal()                                                                  ? 0
+    int step = had_popup || g_modal || binds_modal()                                                     ? 0
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
                                                                                                          : 0;
@@ -1111,7 +1114,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
     if (g_tab != TAB_ADVANCED) g_modal = false;
-    if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+    if (!was_modal && !had_popup &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();
 }
@@ -1434,8 +1438,10 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         plat_mutex_unlock(&ev_lock);
     }
     ImGui_ImplVulkan_NewFrame();
+    // NewFrame can dismiss a dropdown on Escape/B. That press belongs to the dropdown, not to the menu.
+    bool had_popup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     ImGui::NewFrame();
-    if (open) layout_menu(t->width, t->height, scale);
+    if (open) layout_menu(t->width, t->height, scale, had_popup);
     perf_draw(t, scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
