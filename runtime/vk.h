@@ -281,6 +281,8 @@ void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
+uint64_t vk_mem_mirror_gen(void);   // changes whenever a mirror is made or dropped, and with every submission
+int vk_mem_shadow_on(void);         // shadow storage is in use (TOTK_SHADOW)
 // Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
 // it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
@@ -408,8 +410,14 @@ typedef struct {
     uint8_t swz[4];               // NVN texture swizzle selectors (nvnTextureBuilderSetSwizzle); a view swizzle replaces them
     uint8_t fb_usage;              // created with ATTACHMENT_FEEDBACK_LOOP usage (VK_FEEDBACK_LAYOUT, attachable images)
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
-                                   // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
+                                   // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin).
+                                   // Read and set through vk_tex_fb_learned and vk_tex_fb_learn
 } VkTexImage;
+// fb_learned is set by the replay thread (vk_exec_draw.c feedback_prepare) while the helper threads (vk_spec.h) read
+// it for the draws they translate and the passes they begin, so it is loaded and stored atomically. A helper part that
+// read it before the store is dropped: the store is followed by vk_spec_world_changed.
+static inline int vk_tex_fb_learned(const VkTexImage *img) { return __atomic_load_n(&img->fb_learned, __ATOMIC_ACQUIRE); }
+static inline void vk_tex_fb_learn(VkTexImage *img) { __atomic_store_n(&img->fb_learned, 1, __ATOMIC_RELEASE); }
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(const dpool_ref *pool, int id, view_t *view, int *has_view);
@@ -430,6 +438,10 @@ uint32_t vk_texture_slots_gen(void);
 uint64_t vk_texture_slot_token(const dpool_ref *pool, int id);
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
+// The same for a part the helper thread recorded (vk_spec.h): _ready asks, on the helper, whether the marking can wait
+// until the replay thread takes the part; _late does it then, and only for an entry that is still GPU-owned.
+int vk_texture_gpu_written_ready(const tex_t *t);
+void vk_texture_gpu_written_late(const tex_t *t);
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img);   // bytes ReadTexels spans; 0 for a bad region
@@ -496,6 +508,9 @@ uint64_t vk_sync_submit_record(VkSyncRecordFn record, void *context, uint64_t su
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.
 VkCommandBuffer vk_sync_split(void);
+// Inside vk_exec_record, right after vk_sync_split: submits cb, a finished command buffer the helper thread recorded
+// (vk_spec.h), as the next part of the submission, after the upload batch and the mirror copies it needs. No signal.
+void vk_sync_split_insert(VkCommandBuffer cb);
 // Submit the recorded prefix and wait for its dedicated fence, without advancing the full submission's timeline.
 // Replay thread, outside a render pass. Returns a fresh recording command buffer; old resources keep their lifetime.
 VkCommandBuffer vk_sync_split_wait(void);
@@ -520,7 +535,7 @@ void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
 int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 0): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
-void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order
+void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_spec_shutdown, vk_mem_shutdown, vk_shutdown in that order
 
 // ---- pipelines (vk_pipeline.c)
 // Binding model (comment block at the top of vk_pipeline.c): one descriptor set, set 0, per pipeline. Binding 0 is

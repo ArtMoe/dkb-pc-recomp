@@ -161,6 +161,10 @@ void rc_vkCmdPipelineBarrier2(VkCommandBuffer cb,const VkDependencyInfo *di) {
         'static VkDescriptorBufferInfo ssbo_info(', 'static VkDescriptorBufferInfo ubo_info('))
     barrier_helpers = '\n'.join(function(replay, prefix) for prefix in ('static int has_image(',
         'static VkImageMemoryBarrier2 layout_barrier(', 'static void barrier_to(', 'void vk_exec_barrier('))
+    # vk_exec.c FRAME names the replay thread's counters, or a helper translator's while one translates a part; this
+    # fixture records on the replay thread only.
+    if 'FRAME->' in barrier_helpers:
+        barrier_helpers = '#define FRAME (&vk_exec_frame)\n' + barrier_helpers
     cases = r'''
 static void put32(uint8_t *p,uint32_t v) {memcpy(p,&v,4);}
 int main(int argc,char **argv) {

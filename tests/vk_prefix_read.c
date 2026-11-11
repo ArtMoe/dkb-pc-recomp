@@ -71,6 +71,14 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
     NEED(x_here && ex == &X && h->op == OP_BEGIN && !depth); ex->recorded += 2; walked++;
 }
 static void free_views(void *arg) { (void)arg; rt_fatal("unexpected views in provider fixture"); }
+// The helper translators (vk_spec.c) stay off, as by default: record_impl walks every handle itself and par_close
+// has no part to close.
+enum { PS_SCAN };
+static struct { const op_hdr *next; int state; uint64_t rec; } P;
+int vk_spec_on(void) { return 0; }
+int vk_mem_shadow_on(void) { return 0; }
+static void par_close(VkExec *ex) { NEED(x_here && ex == &X && !P.next); }
+static void par_log(void) {}
 void vk_completion_add(uint64_t f, void (*fn)(void *), void *arg) {
     (void)f; (void)fn; (void)arg; rt_fatal("unexpected completion callback in provider fixture");
 }
@@ -83,8 +91,22 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     NEED(cb == slots[cur_slot].cb && ((!crumb && !n) || (crumb == VK_CRUMB_SUBMIT_END && n == cur_fence)));
     end_step = ++step; return recorder;
 }
+// TOTK_REC_SUBMIT=0, the default: the recorder submits no part, split_impl submits every one itself.
+int rec_submit(VkCommandBuffer pro, VkCommandBuffer cb, uint64_t fence) {
+    NEED(recorder && cb == slots[cur_slot].cb && fence == cur_fence); (void)pro; return 0;
+}
 void rec_begin(VkCommandBuffer cb) { NEED(cb == slots[cur_slot].cb && begin_step > submit_step); }
 void vk_crumb(VkCommandBuffer cb, int k, uint64_t n) { NEED(cb == slots[cur_slot].cb && k == VK_CRUMB_SUBMIT && n == cur_fence); }
+// vk_sync.c part_begin with TOTK_REC_BEGIN=0, the default: the submitting thread begins the part, writes the submit
+// crumb and the start timestamp, then hands the part to the recorder, the same calls the split made before it existed.
+static void part_begin(VkCommandBuffer cb, uint64_t fence) {
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(cb, &bi);
+    vk_crumb(cb, VK_CRUMB_SUBMIT, fence);
+    ts_begin(cb);
+    rec_begin(cb);
+}
 uint64_t vk_upload_flush(int wait) { NEED(!wait && end_step); upload_step = ++step; return 1; }
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     NEED(c == &context && fence == cur_fence && upload_step > end_step); pro_step = ++step;

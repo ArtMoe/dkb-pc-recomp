@@ -27,6 +27,7 @@
 #include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_spec.h"
 
 #define WEAK __attribute__((weak))
 #define CALL_DEPTH 8
@@ -50,7 +51,16 @@ VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
 static int nfw;
 
-uint64_t vk_exec_recording_fence(void) { return x_here ? X.fence : 0; }
+// The helper threads' draw translators (vk_spec.h), by helper number.
+static const VkExecHelper *const helper_tr[] = {&vk_exec_draw2_helper, &vk_exec_draw3_helper, &vk_exec_draw4_helper,
+                                                &vk_exec_draw5_helper, &vk_exec_draw6_helper};
+_Static_assert(sizeof helper_tr / sizeof helper_tr[0] == VK_SPEC_HELPERS, "a draw translator for each helper thread");
+
+// The counters of the calling thread: a helper thread keeps its own for the part it records, and they are added to
+// vk_exec_frame when the part is taken (par_join).
+#define FRAME (vk_spec_here ? helper_tr[vk_spec_here - 1]->frame : &vk_exec_frame)
+
+uint64_t vk_exec_recording_fence(void) { return x_here ? X.fence : vk_spec_helper() ? vk_spec_fence() : 0; }
 
 void vk_exec_frame_written(const tex_t *t) {
     if (!(rt_trace & RT_TRACE_GFX) || !t) return;
@@ -187,10 +197,12 @@ static int bc_standin(const VkTexImage *img, uint32_t level, VkFormat fmt, BcSta
             return 1;
         }
     plat_mutex_unlock(&bcs_lock);
+    if (vk_spec_helper()) return vk_spec_fail(VK_SPEC_TARGET), 0;   // made in the upload batch: the replay thread's
     if (full) {
         if (!warned++) rt_log("vk: more than %d 3D BC render targets: the others are left out", BC_STANDINS);
         return 0;
     }
+    vk_spec_event();
     uint32_t lw = level_extent(img->width, level), lh = level_extent(img->height, level);
     BcStandIn s = {img->image, VK_NULL_HANDLE, NULL, fmt, level, (lw + 3) / 4, (lh + 3) / 4,
                    level_extent(img->depth, level)};
@@ -298,6 +310,9 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
     o->tex = t;
     if (!t) return;
     const VkTexImage *img = vk_texture_get(t);
+    // The helper thread makes no texture entry (vk_texture.c entry_of): its part is lost, and the target is not one
+    // to report as unrenderable.
+    if (!img && vk_spec_helper()) { vk_spec_fail(VK_SPEC_TARGET); return; }
     if (img && !depth_slot && bc_target(t, v, has_v, img, o)) return;   // a 3D BC image: its stand-in
     VkImageUsageFlags need = depth_slot ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     int is3d = img && img->type == VK_IMAGE_TYPE_3D && !depth_slot;   // slices drawn through 2D views (2D_ARRAY_COMPATIBLE)
@@ -486,6 +501,32 @@ static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
     return tfr_match(e, t) && (e->last == stamp ? e->prev : e->last) == stamp - 1;
 }
 
+// A target the GPU writes: a pass that ends (stamp: the frame, for the target history) or a whole-target clear (0).
+// A helper thread's writes wait in a list of its own until the replay thread takes its part (par_join), which is their
+// place in submission order; a target whose marking cannot wait (the texture would change hands,
+// vk_texture_gpu_written_ready) costs the helper its part.
+typedef struct { VkExecTarget t; uint64_t stamp; } ParWrite;
+static struct { ParWrite *w; int n, cap; } PW[VK_SPEC_HELPERS];
+
+static void target_written(const VkExecTarget *t, uint64_t stamp) {
+    if (!vk_spec_helper()) {
+        vk_texture_gpu_written(t->tex);
+        if (stamp) tfr_note(t, stamp);
+        return;
+    }
+    if (!vk_texture_gpu_written_ready(t->tex)) {
+        vk_spec_fail(VK_SPEC_TARGET);
+        return;
+    }
+    typeof(PW[0]) *pw = &PW[vk_spec_here - 1];
+    if (pw->n == pw->cap) {
+        pw->cap = pw->cap ? pw->cap * 2 : 64;
+        pw->w = realloc(pw->w, sizeof *pw->w * (size_t)pw->cap);
+        if (!pw->w) rt_fatal("vk: out of memory");
+    }
+    pw->w[pw->n++] = (ParWrite){*t, stamp};
+}
+
 int vk_exec_targets_recent(VkExec *ex, int any) {
     resolve_rt(ex);
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
@@ -554,7 +595,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
-    vk_exec_frame.fb_layouts += n;
+    FRAME->fb_layouts += n;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -578,7 +619,7 @@ void vk_exec_pass_begin(VkExec *ex) {
     uint32_t fbl = 0;
     for (uint32_t i = 0; i < 9; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
-        if ((i < 8 && i >= ex->pass_ncolor) || !t->image || !t->img || !t->img->fb_learned) continue;
+        if ((i < 8 && i >= ex->pass_ncolor) || !t->image || !t->img || !vk_tex_fb_learned(t->img)) continue;
         fbl |= 1u << i;
         if (has_image(want, nwant, t->image)) continue;
         want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
@@ -611,7 +652,7 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL};
     vkCmdBeginRendering(ex->cb, &ri);
-    vk_exec_frame.passes++;
+    FRAME->passes++;
     ex->recorded++;
     ex->in_pass = 1;
 }
@@ -625,11 +666,11 @@ void vk_exec_pass_end(VkExec *ex) {
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
-    if (vk_dump_armed) vk_dump_pass_end(ex);
+    if (vk_dump_armed && !vk_spec_helper()) vk_dump_pass_end(ex);
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
-        if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
-    if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
+        if (ex->color[i].image) target_written(&ex->color[i], stamp);
+    if (ex->depth.image) target_written(&ex->depth, stamp);
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
@@ -700,7 +741,7 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
 }
 
 static void clear_color(VkExec *ex, const p_clear_color *c) {
-    vk_exec_frame.clears++;
+    FRAME->clears++;
     if (ex->render_disabled) return;
     resolve_rt(ex);
     int i = c->index;
@@ -722,7 +763,7 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
         VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, t->level, 1, t->base_layer, t->layers};
         vkCmdClearColorImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &r);
         ex->recorded++;
-        vk_texture_gpu_written(t->tex);
+        target_written(t, 0);
         return;
     }
     VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i};
@@ -743,6 +784,12 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
         else {
             VkRect2D scissor = vk_exec_scissor(ex);
             if (scissor.extent.width && scissor.extent.height) {
+                // Passes of its own and a reset of what is bound: not in a part of the helper thread.
+                if (vk_spec_helper()) {
+                    vk_spec_fail(VK_SPEC_OP);
+                    return;
+                }
+                vk_spec_event();
                 // ClearAttachments ignores the write mask. Draw into each layer with ALWAYS/REPLACE instead,
                 // preserving the depth plane and the stencil bits outside sm. A separate pass also excludes the
                 // clear's fragments from the game's occlusion queries and avoids touching its colour targets.
@@ -772,7 +819,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
         VkImageSubresourceRange r = {asp, t->level, 1, t->base_layer, t->layers};
         vkCmdClearDepthStencilImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &r);
         ex->recorded++;
-        vk_texture_gpu_written(t->tex);
+        target_written(t, 0);
         return;
     }
     VkClearAttachment a = {.aspectMask = asp};
@@ -798,9 +845,11 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 // and occlusion queries end with their pass. Fences, completion callbacks and reports stay per submission: only the last
 // part signals the value. nxnative commits every 64 draws between passes; MacNativeGames after 30, then every 40.
 // A part also spans at least TOTK_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
-// (vkQueueSubmit2, a command buffer, the mirror prologue), and a fight frame of 2,000 draws made 15 parts on the 7900X;
+// (the wait for the recorder, a command buffer, the mirror prologue; vkQueueSubmit2, as much again, is the recorder's
+// with TOTK_REC_SUBMIT, vk_rec.c rec_submit), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
 static int split_n = -1, split_draws, part_start;
+static int par_no_split;   // TOTK_REPLAY_PAR=check: the draws being compared stay in one command buffer, as the helper's
 static uint64_t split_ns, part_t0;
 static uint64_t n_parts, n_subs;
 
@@ -813,7 +862,7 @@ static void maybe_split(VkExec *ex) {
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
                us > 0 ? us : 0, split_n ? "" : " (off)");
     }
-    if (!split_n || ex->in_pass || split_draws < split_n) return;
+    if (!split_n || ex->in_pass || split_draws < split_n || par_no_split) return;
     if (split_ns && kern_now_ns() - part_t0 < split_ns) return;   // split_draws stays: the next draw asks again
     split_draws = 0;
     if (ex->recorded == part_start) return;
@@ -877,8 +926,686 @@ static uint64_t draws_total;   // draws and dispatches walked since the start (v
 
 uint64_t vk_exec_draws_total(void) { return draws_total; }
 
+// The ops that only store fixed-function state for the draws after them. 0: op is not one of them.
+static int state_op(VkExec *ex, uint32_t op, const void *a) {
+    switch (op) {
+    case OP_VIEWPORTS: {
+        const p_viewports *v = a;
+        for (int i = 0; i < v->n && v->first + i < 16; i++)
+            if (v->first + i >= 0) memcpy(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]);
+        ex->has_vp = 1;
+        ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
+        break;
+    }
+    case OP_SCISSOR:
+        ex->scissor = *(const p_scissor *)a;
+        ex->has_scissor = 1;
+        ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
+        break;
+    case OP_DEPTH_RANGE: {
+        const p_depth_range *r = a;
+        ex->depth_range[0] = r->n, ex->depth_range[1] = r->f;
+        ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
+        break;
+    }
+    case OP_STENCIL: {
+        const p_stencil *s = a;
+        for (int f = 0; f < 2; f++) {
+            if (!(s->face & (1 << f))) continue;
+            if (s->which == 0) ex->st_vmask[f] = (uint32_t)s->value_mask;
+            else if (s->which == 1) ex->st_wmask[f] = (uint32_t)s->mask;
+            else ex->st_ref[f] = (uint32_t)s->ref;
+        }
+        ex->dirty |= VK_EXEC_DIRTY_STENCIL;
+        break;
+    }
+    case OP_POLY_OFFSET:
+        ex->poly_offset = *(const p_poly_offset *)a;
+        ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS;
+        break;
+    case OP_BLEND_COLOR:
+        memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
+        ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
+        break;
+    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
+    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
+    case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
+    case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
+    case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
+    case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
+    default: return 0;
+    }
+    return 1;
+}
+
+static void views_to_fence(VkExec *ex, uint64_t fence) {   // the views made for a command buffer go when it is done
+    if (!ex->nviews) return;
+    ViewList *l = malloc(sizeof *l + sizeof(VkImageView) * (size_t)ex->nviews);
+    if (!l) rt_fatal("vk: out of memory");
+    l->n = ex->nviews;
+    for (int i = 0; i < ex->nviews; i++) l->v[i] = ((ViewEnt *)ex->views)[i].view;
+    vk_completion_add(fence, free_views, l);
+    ex->nviews = 0;
+}
+
+// ---- a run shared with the helper threads (vk_spec.h, TOTK_REPLAY_PAR)
+// A run is a stretch of the op stream made of state, binds, clears and draws only: nothing in it reads back what the
+// GPU wrote, signals the guest or changes the order of GPU writes into guest memory. At the start of a run the replay
+// thread looks ahead to its end (par_scan) and picks the draws it leaves to the helpers (par_plan): those from a cut
+// to an end, cut into one consecutive part for each helper. It launches the helpers (par_launch) and goes on
+// translating up to the cut. Each helper first walks the ops before its part for their state alone, which gives it
+// the replay state the replay thread will have where the part begins, then translates its part into a command buffer
+// of its own (par_job). At the cut the replay thread ends its pass, waits for the first helper and checks that what
+// that helper assumed held (par_join): then its own part goes to the queue, the helper's behind it, and the replay
+// goes on after the helper's part with the helper's state. That is where the next helper's part begins, and it is met
+// the same way. A part that did not hold is dropped, and the replay thread walks its draws as if no helper had run, up
+// to the next part, which can still be taken.
+//
+// What a helper cannot do it does not do (vk_spec_fail): it never writes memory the guest reads, uploads a texture or
+// makes an image, a texture entry or a stand-in. What a dropped part leaves behind is what the replay thread would
+// have made at the same draws (vk_spec.h lists it): image views in the caches both threads use, a missing pipeline
+// entered into the cache with its build queued, the freshness marks of textures found unchanged, and mirror syncs
+// made a little earlier than their first use. The replay thread notes, draw by draw, the two things that decide where the
+// parts can lie (par_watch): where it changed what a helper part reads (texture entries, mirrors, uniform snapshots:
+// no such change may fall between the launch and the end of the last part) and where it did what a helper gives up
+// for (none of that inside a part). A scene does the same things at the same draws frame after frame, so one frame
+// plans the next, and a part that fails is walked by the replay thread, which then knows why.
+#define PAR_RUN_MAX 8192   // draws of one run; a longer run goes on as the next one
+#define PAR_RUN_MIN 160    // draws a run needs before a part is considered
+#define PAR_PART_MIN 48    // draws a helper part needs to pay for its launch and join
+#define PAR_GUARD 8        // draws left between a part and a draw it cannot hold: draws shift a little between frames
+#define PAR_SLOTS 32       // runs that are remembered
+#define PAR_SPAN 160       // k helpers take parts where PAR_SPAN * k * k draws lie between the launch and the end of
+                           // the parts (par_count): two from 640, three from 1,440, four from 2,560. With a part
+                           // for every 160 draws a scene whose runs have 800 to 1,100 draws lost 1.9 ms a frame
+#define PAR_PACE 2.0f      // draws the replay thread translates while a helper translates one, to start from: a
+                           // helper's draws cost more, it makes its Vulkan calls itself (the replay thread's go
+                           // through the recorder, vk_rec.c)
+
+// What is known about one run. gen and ev have a bit per draw: bit i is set when, between its looks before draw
+// i - 1 and before draw i (bit n: after the last draw), the replay thread changed what a helper part reads (gen) or did
+// what a helper does not do (ev). The bits of the draws a taken part held stay clear: the helper found neither.
+typedef struct {
+    uint64_t key;                // the render targets the run draws to (par_rt_key)
+    uint64_t seen;               // the recording it was last met in
+    uint32_t n;                  // its draws
+    uint32_t ks;                 // the helpers share was learned with (par_count); 0: not yet
+    float share;                 // the replay thread's share of the draws between the launch and the end of the parts
+    uint32_t k;                  // the parts w is for
+    float w[VK_SPEC_HELPERS];    // each part's share of the helpers' draws
+    uint32_t fails, wait;        // runs in a row without a part taken; recordings to sit out before the next try
+    uint32_t l, y;               // the last plan: launched after l draws, the parts end at draw y; y 0: no part
+    uint32_t c[VK_SPEC_HELPERS]; // the draw each of its k parts begins at
+    uint32_t tried, taken;       // parts since the last log, with the sums below
+    uint64_t busy_ns, state_ns, early_ns, wait_ns;
+    uint8_t gen[PAR_RUN_MAX / 8 + 1], ev[PAR_RUN_MAX / 8 + 1];
+} ParSlot;
+static ParSlot par_slots[PAR_SLOTS];
+
+// One part of the run being walked: part i is translated by helper i (vk_spec.h) with helper_tr[i].
+typedef struct {
+    const op_hdr *cut, *hend;           // its first op, and the op after its last (the next part's first)
+    uint32_t c, y;                      // its draws: c to y
+    int out;                            // launched and not met yet
+    int taken;                          // met and taken
+    uint64_t busy_ns, state_ns, t_done; // helper: time spent on the part, on the state before it, and when it ended
+    int64_t lag_ns;                     // from the replay thread's wait for the part to its end; negative: ended before
+    VkExec H, S;                        // the helper's replay state, and what it started its part from
+} ParPart;
+
+enum { PS_SCAN, PS_LAUNCH, PS_JOIN, PS_END, PS_CHECK };
+static struct {
+    const op_hdr *next;                 // the op par_step acts at; NULL: none in this recording
+    int state;                          // what it does there
+    uint64_t rec;                       // recordings that looked for runs
+    ParSlot *slot;                      // the run being walked; NULL: not a long one
+    const op_hdr *from;                 // where the helpers are launched
+    const op_hdr *stop, *after;         // end of the run, start of the next scan
+    uint32_t n, l, k;                   // draws of the run; the plan: launched after l draws, k parts
+    uint32_t ji, ci;                    // the part met next (PS_JOIN); the part being compared (PS_CHECK)
+    uint32_t ord;                       // draws of the run the replay thread reached or left to the helpers
+    uint64_t g;                         // par_watch: the generations and the events at its last look
+    uint32_t e;
+    int live;                           // parts that are out
+    uint32_t ntaken;                    // parts of this run taken so far
+    int planned;                        // every part of the plan was launched: the plan learns from this run
+    uint64_t world, mirror, usnap;      // the generations at the launch
+    VkExecFrame chk_frame;              // TOTK_REPLAY_PAR=check: this thread's counters where the part begins
+    uint64_t chk_parts, chk_bad;        // parts compared, and those that differed
+    uint64_t chk_word[VK_EXEC_DIG_W];   // by the first word of the digest that differed
+    const op_hdr *draws[PAR_RUN_MAX];   // the run's draw ops
+    ParPart part[VK_SPEC_HELPERS];
+} P;
+
+// 1: an op of a run, 2: a draw. Everything else ends the run.
+static int par_run_op(uint32_t op) {
+    switch (op) {
+    case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND: return 2;
+    case OP_BEGIN: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_STENCIL: case OP_POLY_OFFSET:
+    case OP_BLEND_COLOR: case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD: case OP_PRIM_RESTART: case OP_COPY_STRIDE:
+    case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_SET_RT: case OP_CLEAR_COLOR: case OP_CLEAR_DS:
+    case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+    case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_PUSH_CONST:
+    case OP_BARRIER: case OP_WAIT_SYNC: return 1;
+    default: return 0;
+    }
+}
+
+static uint64_t par_gens(void) { return vk_spec_world() + vk_mem_mirror_gen() + vk_usnap_gen(); }
+
+static void par_bit(uint8_t *b, uint32_t i, int on) {
+    if (on) b[i >> 3] |= (uint8_t)(1u << (i & 7));
+    else b[i >> 3] &= (uint8_t)~(1u << (i & 7));
+}
+
+static int par_bit_at(const uint8_t *b, uint32_t i) { return b[i >> 3] >> (i & 7) & 1; }
+
+// Before each draw of a long run the replay thread translates: what happened since the last look.
+static void par_watch(void) {
+    ParSlot *s = P.slot;
+    uint64_t g = par_gens();
+    uint32_t e = vk_spec_events();
+    par_bit(s->gen, P.ord, g != P.g);
+    par_bit(s->ev, P.ord, e != P.e);
+    if (g != P.g && P.live)   // the parts that are out are lost: their helpers stop at their next op
+        vk_spec_fail(vk_spec_world() != P.world ? VK_SPEC_WORLD : vk_mem_mirror_gen() != P.mirror ? VK_SPEC_MIRROR : VK_SPEC_USNAP);
+    P.g = g, P.e = e;
+    P.ord++;
+}
+
+// Helper thread, with its translator t: the ops from h up to end. state_only: only what they leave in the replay
+// state (the ops the replay thread and the helpers before translate meanwhile); otherwise recorded into ex->cb. Stops
+// at the first op after the part was given up.
+static void par_walk(const VkExecHelper *t, VkExec *ex, const op_hdr *h, const op_hdr *end, int state_only) {
+    while (h != end && !vk_spec_failed()) {
+        const void *a = nvn_op_payload(h);
+        switch (h->op) {
+        case OP_BEGIN: case OP_WAIT_SYNC: break;
+        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
+        case OP_SET_RT:
+            if (!state_only) set_rt(ex, a);
+            else if (memcmp(&ex->rt, a, sizeof ex->rt)) ex->rt = *(const p_set_rt *)a, ex->rt_resolved = 0;
+            break;
+        case OP_CLEAR_COLOR:
+            if (!state_only) clear_color(ex, a);
+            break;
+        case OP_CLEAR_DS:
+            if (!state_only) clear_ds(ex, a);
+            break;
+        case OP_BARRIER:
+            if (!state_only) vk_exec_barrier(ex);
+            break;
+        case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND:
+            if (state_only) break;
+            t->frame->draws_seen++;
+            t->digest_draw(ex);
+            // fall through
+        case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+        case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_PUSH_CONST:
+            t->op(ex, h->op, a);
+            break;
+        default:
+            if (!state_op(ex, h->op, a)) vk_spec_fail(VK_SPEC_OP);   // par_scan lets no other op into a run
+        }
+        h = nvn_op_next(h);
+    }
+}
+
+// Helper thread: its part. The command buffer is ended whatever happens: it is begun again for a later part.
+static void par_job(void *arg) {
+    ParPart *p = arg;
+    const VkExecHelper *t = helper_tr[p - P.part];
+    uint64_t t0 = kern_now_ns();
+    VkExec *ex = &p->H;
+    par_walk(t, ex, P.from, p->cut, 1);
+    // The command buffer starts as the replay thread's do (record_impl); every image is in GENERAL: the part before
+    // ends with a full barrier, the replay thread's (par_join) or a helper's (below).
+    ex->recorded = 0, ex->in_pass = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0, ex->barrier_at = -1;
+    ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
+    memcpy(&p->S, ex, sizeof p->S);
+    p->state_ns = kern_now_ns() - t0;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(ex->cb, &bi);
+    if (vk_spec_checking()) t->digest_begin(ex);
+    par_walk(t, ex, p->cut, p->hend, 0);
+    vk_exec_pass_end(ex);
+    vk_exec_barrier(ex);   // the part behind begins after a full barrier, as after the replay thread's own parts
+    vkEndCommandBuffer(ex->cb);
+    p->t_done = kern_now_ns();
+    p->busy_ns = p->t_done - t0;
+}
+
+// The launch conditions that can change during a run are asked here; record_impl asked the others. Every helper of
+// the plan is launched from the same point: what it reads may not change from here to the end of its part.
+static void par_launch(VkExec *ex) {
+    P.state = PS_END, P.next = P.stop;
+    // A helper part records no occlusion query, dump copy or breadcrumb.
+    if (!vk_exec_oq_idle() || vk_dump_armed || vk_crumb_bind_on() || vk_checkpoints_on()) return;
+    P.world = vk_spec_world(), P.mirror = vk_mem_mirror_gen(), P.usnap = vk_usnap_gen();
+    uint32_t k = 0;
+    for (; k < P.k; k++) {
+        ParPart *p = &P.part[k];
+        const VkExecHelper *t = helper_tr[k];
+        VkCommandBuffer cb = vk_spec_cb((int)k, ex->fence);
+        if (!cb) break;
+        if (!t->begin()) {
+            vk_spec_cb_drop((int)k);
+            break;
+        }
+        void *views = p->H.views;   // the helper's own list of views, kept from part to part
+        int cap = p->H.cap_views;
+        memcpy(&p->H, ex, sizeof p->H);
+        p->H.cb = cb, p->H.in_pass = 0, p->H.views = views, p->H.nviews = 0, p->H.cap_views = cap;
+        PW[k].n = 0;
+        memset(t->frame, 0, sizeof *t->frame);
+        p->busy_ns = p->state_ns = 0;
+        p->out = 1, p->taken = 0;
+        vk_dlss_part_begin((int)k);
+        vk_spec_launch((int)k, par_job, p, ex->fence);
+    }
+    if (!k) return;
+    // A helper without a command buffer or stand-ins leaves its part and the ones behind it to the replay thread.
+    P.planned = k == P.k;
+    P.k = k, P.live = (int)k, P.ji = 0, P.ntaken = 0;
+    P.slot->tried += k;
+    P.state = PS_JOIN, P.next = P.part[0].cut;
+}
+
+// The targets by their storage: Bananza initializes its target textures anew every frame, so neither the address of
+// the object nor its serial says which target it is.
+static uint64_t par_rt_key(uint64_t k, const p_set_rt *r) {
+    k = (k ^ (uint64_t)(uint32_t)r->n) * 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < r->n && i < 8; i++) k = (k ^ (r->color[i] ? (uintptr_t)r->color[i]->mem : 0)) * 0x9E3779B97F4A7C15ull;
+    return (k ^ (r->depth ? (uintptr_t)r->depth->mem : 0)) * 0x9E3779B97F4A7C15ull;
+}
+
+// The remembered run this one is: the same targets and nearly the same number of draws, and not met yet in this
+// recording. A run met for the first time takes the place of the one that was not met for the longest.
+static ParSlot *par_slot(uint64_t key, uint32_t n) {
+    ParSlot *s = NULL, *old = &par_slots[0];
+    uint32_t best = n / 8 + 1;
+    for (int i = 0; i < PAR_SLOTS; i++) {
+        ParSlot *t = &par_slots[i];
+        if (t->seen < old->seen) old = t;
+        if (!t->n || t->key != key || t->seen == P.rec) continue;
+        uint32_t d = t->n > n ? t->n - n : n - t->n;
+        if (d < best) best = d, s = t;
+    }
+    if (!s) {
+        s = old;
+        memset(s, 0, sizeof *s);
+        s->key = key;
+    }
+    s->n = n, s->seen = P.rec;
+    return s;
+}
+
+// The helpers that the draws between a launch and the end of the parts are worth. A further part saves less than the
+// one before it and costs as much: a join, a submission and a pass of its own. So k parts take PAR_SPAN * k * k draws.
+static uint32_t par_count(uint32_t span) {
+    uint32_t k = 1, max = (uint32_t)vk_spec_count();
+    while (k < max && span >= PAR_SPAN * (k + 1) * (k + 1)) k++;
+    return k;
+}
+
+// The draws of a run of n draws that are left to the helpers, where that saves the most: draws c to y, the helpers
+// launched after l draws. Returns the helpers the draws from l to y are worth (par_count), 0: no part. Between the
+// launch and the end of the parts nothing a helper reads may change (gen clear from l to y), and the parts hold
+// nothing a helper gives up for (ev clear from c to y). The replay thread should reach the cut when the helpers end,
+// so it takes its share of the draws between l and y, or more where the parts have to begin later.
+static uint32_t par_plan(const ParSlot *s, uint32_t n, uint32_t *pl, uint32_t *pc, uint32_t *py) {
+    uint32_t best = 0, bk = 0;
+    uint32_t lg = 0;   // the helper cannot be launched before this many draws: a gen bit lies right below
+    uint32_t x = 0;    // both bits are clear from here on
+    for (uint32_t i = 0; i <= n + 1; i++) {
+        int g = i <= n && par_bit_at(s->gen, i), e = i <= n && par_bit_at(s->ev, i);
+        if (i <= n && !g && !e) continue;
+        // Bits x to i - 1 are clear. A part may end at the end of the run, or a guard below a set bit.
+        uint32_t y = i > n ? n : i > PAR_GUARD ? i - 1 - PAR_GUARD : 0;
+        uint32_t l = lg ? lg + PAR_GUARD : 0, lo = x ? x + PAR_GUARD : 0;
+        if (y > l && y > lo) {
+            uint32_t k = par_count(y - l);
+            float share = k == s->ks ? s->share : PAR_PACE / ((float)k + PAR_PACE);
+            uint32_t c = l + (uint32_t)ceilf((float)(y - l) * share);
+            if (c < lo) c = lo;
+            if (c <= l) c = l + 1;
+            if (c < y && y - c >= PAR_PART_MIN && y - c > best) best = y - c, bk = k, *pl = l, *pc = c, *py = y;
+        }
+        x = i + 1;
+        if (g) lg = i + 1;
+    }
+    return bk;
+}
+
+// At the first op of a run: its extent and draws, and whether and where the helpers take parts of it.
+static void par_scan(VkExec *ex, const op_hdr *h) {
+    uint32_t n = 0;
+    int kind;
+    const op_hdr *p = h;
+    uint64_t key = par_rt_key(1, &ex->rt);
+    for (;;) {
+        if (p->size < sizeof *p || (p->size & 7) || p->op >= OP_COUNT_) {   // walk reports it when it gets there
+            P.next = NULL;
+            return;
+        }
+        if (p->op == OP_JUMP) {
+            p = (const op_hdr *)(uintptr_t)((const p_jump *)nvn_op_payload(p))->target;
+            continue;
+        }
+        if (!(kind = par_run_op(p->op)) || (kind == 2 && n == PAR_RUN_MAX)) break;
+        if (kind == 2) P.draws[n++] = p;
+        else if (p->op == OP_SET_RT) key = par_rt_key(key, nvn_op_payload(p));
+        p = nvn_op_next(p);
+    }
+    P.stop = p;
+    P.after = kind ? p : p->op == OP_END ? NULL : nvn_op_next(p);   // a run cut short by its length goes on at p
+    P.slot = NULL;
+    P.state = PS_SCAN, P.next = P.after;
+    if (n < PAR_RUN_MIN) return;
+    ParSlot *s = par_slot(key, n);
+    P.slot = s, P.n = n, P.ord = 0;
+    P.g = par_gens(), P.e = vk_spec_events();
+    P.state = PS_END, P.next = P.stop;
+    s->y = 0;
+    if (s->wait) {
+        s->wait--;
+        return;
+    }
+    uint32_t c, y, ks = par_plan(s, n, &P.l, &c, &y);
+    if (!ks) return;
+    if (ks != s->ks) s->ks = ks, s->share = PAR_PACE / ((float)ks + PAR_PACE);
+    uint32_t k = ks;
+    while (k > 1 && y - c < k * PAR_PART_MIN) k--;
+    if (k != s->k) {
+        s->k = k;
+        for (uint32_t i = 0; i < k; i++) s->w[i] = 1.0f / (float)k;
+    }
+    // The helpers' draws by each part's share, every part long enough to pay for itself.
+    float upto = 0;
+    uint32_t at = c;
+    for (uint32_t i = 0; i < k; i++) {
+        ParPart *p = &P.part[i];
+        upto += s->w[i];
+        uint32_t end = c + (uint32_t)((float)(y - c) * upto + 0.5f), max = y - (k - 1 - i) * PAR_PART_MIN;
+        if (i == k - 1 || end > max) end = max;
+        if (end < at + PAR_PART_MIN) end = at + PAR_PART_MIN;
+        p->c = s->c[i] = at, p->y = end;
+        p->cut = nvn_op_next(P.draws[at - 1]);
+        p->hend = end == n ? P.stop : nvn_op_next(P.draws[end - 1]);
+        at = end;
+    }
+    P.k = k;
+    s->l = P.l, s->y = y;
+    if (!P.l) {
+        P.from = h;
+        par_launch(ex);
+    } else {
+        P.from = nvn_op_next(P.draws[P.l - 1]);
+        P.state = PS_LAUNCH, P.next = P.from;
+    }
+}
+
+// 1: the op-determined replay state of a and b is the same: the render targets, the fixed-function state, the state
+// objects and every binding. What draws and passes derive from it (shaders, formats, resolved targets) is left out.
+static int par_same(const VkExec *a, const VkExec *b) {
+#define PAR_SAME(from, to) \
+    !memcmp((const char *)a + offsetof(VkExec, from), (const char *)b + offsetof(VkExec, from), \
+            offsetof(VkExec, to) - offsetof(VkExec, from))
+    return !memcmp(&a->rt, &b->rt, sizeof a->rt) && PAR_SAME(vp, pipe) && a->pipe.depth_clamp == b->pipe.depth_clamp &&
+           a->pipe.raster_discard == b->pipe.raster_discard && PAR_SAME(pipe.blend, pipe.gs) &&
+           !memcmp(&a->pipe.alpha_ref, &b->pipe.alpha_ref, sizeof a->pipe.alpha_ref) && PAR_SAME(prog, views);
+#undef PAR_SAME
+}
+
+// The last part of a run was met. A run without a part taken counts towards sitting the next recordings out. A run
+// with every part taken moves the plan: the replay thread should reach the cut when the helpers end, and the helpers
+// should all end together, but the draws of a run do not cost the same.
+static void par_learn(void) {
+    ParSlot *s = P.slot;
+    if (!P.ntaken) {
+        s->fails++;
+        // What the replay thread notes on the draws it now walks itself moves the next parts (par_watch); a reason it
+        // cannot see (a pipeline still building) is waited out.
+        s->wait = s->fails < 3 ? 0 : s->fails < 9 ? 1u << (s->fails - 3) : 64;
+        return;
+    }
+    s->fails = 0;
+    if (P.ntaken != P.k || !P.planned || P.k != s->k || vk_spec_checking()) return;
+    uint32_t k = P.k, draws = P.part[k - 1].y - P.part[0].c;
+    double busy = 0, done = 0;
+    int64_t off = INT64_MIN;   // how long this thread waited for the helper it waited longest for; negative: the
+                               // time every helper stood idle before this thread came for its part
+    for (uint32_t i = 0; i < k; i++) {
+        const ParPart *p = &P.part[i];
+        busy += (double)(p->busy_ns - p->state_ns);
+        done += (double)(int64_t)(p->t_done - P.part[0].t_done) / (double)k;
+        if (p->lag_ns > off) off = p->lag_ns;
+    }
+    // The cut moves by the draws that would have made up for the wait or the idle time. A draw of the parts cost a
+    // helper b, and this thread would have spent a little less on it; a draw this thread takes over comes off all k
+    // parts.
+    double b = busy / (double)draws;
+    if (b > 0) {
+        s->share += 0.4f * (float)((double)off / ((0.8 + 1.0 / (double)k) * b) / (double)(P.part[k - 1].y - P.l));
+        // The fewest draws this thread keeps: with several helpers it is the one the others wait for.
+        s->share = s->share < 0.05f ? 0.05f : s->share > 0.95f ? 0.95f : s->share;
+    }
+    // A part whose helper ended after the others gets fewer of the helpers' draws, one that ended before them more.
+    float sum = 0;
+    for (uint32_t i = 0; i < k; i++) {
+        const ParPart *p = &P.part[i];
+        double t = (double)(p->busy_ns - p->state_ns), late = (double)(int64_t)(p->t_done - P.part[0].t_done) - done;
+        double f = t > 0 ? 1.0 - 0.5 * late / t : 1.0;
+        s->w[i] *= (float)(f < 0.5 ? 0.5 : f > 1.5 ? 1.5 : f);
+        sum += s->w[i];
+    }
+    for (uint32_t i = 0; i < k; i++) s->w[i] /= sum;
+}
+
+// At a part's first op: the part is taken, and the replay goes on at its end (returned), which is where the next
+// part begins; or it is dropped and the replay goes on here.
+static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
+    ParSlot *s = P.slot;
+    uint32_t i = P.ji;
+    ParPart *p = &P.part[i];
+    const VkExecHelper *t = helper_tr[i];
+    int last = i + 1 == P.k;
+    if (last) P.state = PS_END, P.next = P.stop;
+    else P.ji = i + 1, P.next = P.part[i + 1].cut;   // PS_JOIN again
+    // Straight from the part before, which was taken: this thread's command buffer is new and holds nothing, so
+    // there is no pass to end and no part of its own to send first.
+    int behind = i && P.part[i - 1].taken && ex->recorded == part_start;
+    if (!behind && !vk_spec_part_failed((int)i)) {   // a part that is lost already does not cost the replay thread its open pass
+        vk_exec_pass_end(ex);
+        vk_exec_barrier(ex);
+    }
+    uint64_t t_wait = kern_now_ns();
+    int why = vk_spec_join((int)i);
+    uint64_t wait_ns = kern_now_ns() - t_wait;
+    p->out = 0, P.live--;
+    // What the helper read while it translated: unchanged since the launch, the end of this thread's pass included.
+    if (!why) {
+        why = vk_spec_world() != P.world ? VK_SPEC_WORLD : vk_mem_mirror_gen() != P.mirror ? VK_SPEC_MIRROR :
+              vk_usnap_gen() != P.usnap ? VK_SPEC_USNAP : !par_same(ex, &p->S) ? VK_SPEC_STATE : VK_SPEC_NONE;
+    }
+    views_to_fence(&p->H, ex->fence);
+    vk_spec_note(why, p->y - p->c, wait_ns, p->busy_ns);
+    s->busy_ns += p->busy_ns, s->state_ns += p->state_ns, s->wait_ns += wait_ns;
+    if (p->t_done < t_wait) s->early_ns += t_wait - p->t_done;
+    p->lag_ns = (int64_t)(p->t_done - t_wait);
+    if (!why) P.ntaken++;
+    if (last) par_learn();
+    if (why) {
+        vk_spec_cb_drop((int)i);
+        PW[i].n = 0;
+        return h;
+    }
+    if (vk_spec_checking()) {
+        // The helper's part is dropped and this thread translates the same draws from the same start: nothing bound
+        // on the command buffer, no memo of the state, no barrier to rely on. par_check compares at the end.
+        vk_spec_cb_drop((int)i);
+        PW[i].n = 0;
+        ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0, ex->barrier_at = -1;
+        ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
+        vk_exec_draw_rebase();
+        P.chk_frame = vk_exec_frame;
+        vk_exec_draw_digest_begin(ex);
+        par_no_split = 1;
+        P.ci = i;
+        P.state = PS_CHECK, P.next = p->hend;
+        return h;
+    }
+    // This thread's part if it recorded one, then the helper's, then a new command buffer for what follows.
+    if (!behind) ex->cb = vk_sync_split(), n_parts++;
+    vk_sync_split_insert(p->H.cb);
+    n_parts++;
+    for (int j = 0; j < PW[i].n; j++) {
+        vk_texture_gpu_written_late(PW[i].w[j].t.tex);
+        if (PW[i].w[j].stamp) tfr_note(&PW[i].w[j].t, PW[i].w[j].stamp);
+    }
+    PW[i].n = 0;
+    vk_dlss_part_taken((int)i);
+    for (size_t j = 0; j < sizeof vk_exec_frame / sizeof(uint64_t); j++)
+        ((uint64_t *)&vk_exec_frame)[j] += ((const uint64_t *)t->frame)[j];
+    draws_total += t->frame->draws_seen;   // walk did not see the part's draws (a part holds no dispatch)
+    // The replay state after the part is the helper's: everything from the render targets to the bindings. The command
+    // buffer is new, the targets are resolved again, and no memo of this thread's translator knows the state.
+    uint32_t tex_serial = (ex->tex_serial > p->H.tex_serial ? ex->tex_serial : p->H.tex_serial) + 1;
+    uint32_t pass_serial = (ex->pass_serial > p->H.pass_serial ? ex->pass_serial : p->H.pass_serial) + 1;
+    memcpy((char *)ex + offsetof(VkExec, rt), (const char *)&p->H + offsetof(VkExec, rt),
+           offsetof(VkExec, views) - offsetof(VkExec, rt));
+    ex->in_pass = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0;
+    ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
+    ex->tex_serial = tex_serial, ex->pass_serial = pass_serial;
+    vk_exec_draw_rebase();
+    split_draws = 0;
+    part_start = ex->recorded;
+    part_t0 = kern_now_ns();
+    p->taken = 1;
+    s->taken++;
+    // The helper's draws are behind this thread: par_watch looks again from here.
+    P.ord = p->y == P.n ? P.n + 1 : p->y;
+    P.g = par_gens(), P.e = vk_spec_events();
+    return p->hend;
+}
+
+// TOTK_REPLAY_PAR=check, at the end of a part its helper and this thread translated: the same draws bound and
+// recorded the same, and left the same replay state.
+static void par_check(VkExec *ex) {
+    const ParPart *p = &P.part[P.ci];
+    const VkExecHelper *t = helper_tr[P.ci];
+    const uint64_t *a, *b;
+    vk_exec_pass_end(ex);   // as the helper ends its part (par_job)
+    vk_exec_barrier(ex);
+    uint32_t na = vk_exec_draw_digest_end(ex, &a), nb = t->digest_end(&p->H, &b), at = 0;
+    const VkExecFrame *f = &vk_exec_frame, *f0 = &P.chk_frame, *hf = t->frame;
+    static const char *const word[VK_EXEC_DIG_W] = {
+        "the image views a draw binds", "the samplers a draw binds", "the image layouts a draw binds",
+        "the uniform buffer ranges a draw binds", "the uniform buffers a draw binds",
+        "the uniform bytes a translator filled in for a draw", "the storage buffer ranges a draw binds",
+        "the storage buffers a draw binds", "the pipeline or the dynamic state of a draw",
+        "the vertex or index buffers of a draw", "the commands a draw records"};
+    const char *bad = na != nb ? "the number of draws" : NULL;
+    for (uint32_t i = 0; !bad && i < na * VK_EXEC_DIG_W; i++)
+        if (a[i] != b[i]) bad = word[i % VK_EXEC_DIG_W], at = i / VK_EXEC_DIG_W, P.chk_word[i % VK_EXEC_DIG_W]++;
+    if (!bad && !par_same(ex, &p->H)) bad = "the replay state after the part";
+    if (!bad && memcmp(&ex->pipe, &p->H.pipe, sizeof ex->pipe)) bad = "the pipeline state after the part";
+    if (!bad && (f->draws - f0->draws != hf->draws || f->passes - f0->passes != hf->passes ||
+                 f->clears - f0->clears != hf->clears || f->fb_draws - f0->fb_draws != hf->fb_draws ||
+                 f->fb_barriers - f0->fb_barriers != hf->fb_barriers || f->fb_restarts - f0->fb_restarts != hf->fb_restarts))
+        bad = "the draws, passes, clears or feedback barriers recorded";
+    P.chk_parts++;
+    if (bad && P.chk_bad++ < 16)
+        rt_log("vk_spec: check: helper %u's part of draws %u to %u of a run of %u differs in %s (draw %u of the part; "
+               "draws %llu and %llu, passes %llu and %llu)",
+               P.ci + 1, p->c, p->y, P.n, bad, at, (unsigned long long)(f->draws - f0->draws),
+               (unsigned long long)hf->draws, (unsigned long long)(f->passes - f0->passes),
+               (unsigned long long)hf->passes);
+    par_no_split = 0;
+    if (P.ci + 1 == P.k) P.state = PS_END, P.next = P.stop;
+    else P.state = PS_JOIN, P.next = P.part[P.ci + 1].cut;   // par_join set P.ji to that part
+}
+
+// At the end of a long run: the ops after the last draw, if this thread walked them.
+static void par_end(void) {
+    ParSlot *s = P.slot;
+    if (s && P.ord == P.n) {
+        par_bit(s->gen, P.n, par_gens() != P.g);
+        par_bit(s->ev, P.n, vk_spec_events() != P.e);
+    }
+    P.slot = NULL;
+    P.state = PS_SCAN, P.next = P.after;
+}
+
+// The replay thread reached P.next. Returns the op to go on at: h, or the end of a part that was taken.
+static const op_hdr *par_step(VkExec *ex, const op_hdr *h) {
+    switch (P.state) {
+    case PS_SCAN: par_scan(ex, h); break;
+    case PS_LAUNCH: par_launch(ex); break;
+    case PS_JOIN: return par_join(ex, h);
+    case PS_CHECK: par_check(ex); break;
+    default: par_end(); break;
+    }
+    return h;
+}
+
+// The recording is over: no part is out in a well-formed stream, where the replay thread always reaches the cut.
+static void par_close(VkExec *ex) {
+    P.next = NULL, P.slot = NULL;
+    par_no_split = 0;
+    if (!P.live) return;
+    vk_spec_fail(VK_SPEC_CANCEL);
+    for (int i = 0; i < VK_SPEC_HELPERS; i++) {
+        ParPart *p = &P.part[i];
+        if (!p->out) continue;
+        vk_spec_note(vk_spec_join(i), 0, 0, p->busy_ns);
+        p->out = 0;
+        views_to_fence(&p->H, ex->fence);
+        vk_spec_cb_drop(i);
+        PW[i].n = 0;
+    }
+    P.live = 0;
+}
+
+static void par_log(void) {
+    static uint64_t since;
+    vk_spec_log();
+    if (vk_spec_checking())
+        rt_log("perf: helper check: %llu parts compared, %llu differ (first in image views %llu, samplers %llu, "
+               "image layouts %llu, uniform ranges %llu, uniform buffers %llu, uniform bytes %llu, storage ranges %llu, "
+               "storage buffers %llu, pipeline and state %llu, vertex and index buffers %llu, commands %llu)",
+               (unsigned long long)P.chk_parts, (unsigned long long)P.chk_bad, (unsigned long long)P.chk_word[0],
+               (unsigned long long)P.chk_word[1], (unsigned long long)P.chk_word[2], (unsigned long long)P.chk_word[3],
+               (unsigned long long)P.chk_word[4], (unsigned long long)P.chk_word[5], (unsigned long long)P.chk_word[6],
+               (unsigned long long)P.chk_word[7], (unsigned long long)P.chk_word[8], (unsigned long long)P.chk_word[9],
+               (unsigned long long)P.chk_word[10]);
+    for (int i = 0; i < PAR_SLOTS; i++) {
+        ParSlot *s = &par_slots[i];
+        if (!s->n || s->seen <= since) continue;
+        uint32_t ne = 0, ng = 0, e0 = 0, e1 = 0, g0 = 0, g1 = 0;
+        for (uint32_t j = 0; j <= s->n; j++) {
+            if (par_bit_at(s->ev, j)) e1 = j, e0 = ne++ ? e0 : j;
+            if (par_bit_at(s->gen, j)) g1 = j, g0 = ng++ ? g0 : j;
+        }
+        double t = s->tried ? 1e3 * (double)s->tried : 1;
+        char at[64] = "";
+        for (uint32_t j = 0, o = 0; s->y && j < s->k && o < sizeof at - 12; j++)
+            o += (uint32_t)snprintf(at + o, sizeof at - o, "%s%u", j ? ", " : "", s->c[j]);
+        rt_log("perf: helper run of %u draws: parts from draws %s to %u launched after %u, replay share %.2f; %u of %u "
+               "taken, helper %.0f us (%.0f on the state before) and %.0f us early, replay waited %.0f us a part; no "
+               "part taken in a row %u; helpers cannot hold %u draws (%u to %u), their reads change at %u (%u to %u)",
+               s->n, s->y ? at : "none", s->y, s->l, s->share, s->taken, s->tried, (double)s->busy_ns / t,
+               (double)s->state_ns / t, (double)s->early_ns / t, (double)s->wait_ns / t, s->fails, ne, e0, e1, ng, g0, g1);
+        s->tried = s->taken = 0;
+        s->busy_ns = s->state_ns = s->early_ns = s->wait_ns = 0;
+    }
+    since = P.rec;
+}
+
 static void walk(VkExec *ex, const op_hdr *h, int depth) {
     for (;;) {
+        while (h == P.next && !depth) h = par_step(ex, h);
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
             rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
         const void *a = nvn_op_payload(h);
@@ -893,54 +1620,14 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_SET_RT: set_rt(ex, a); break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
-        case OP_VIEWPORTS: {
-            const p_viewports *v = a;
-            for (int i = 0; i < v->n && v->first + i < 16; i++)
-                if (v->first + i >= 0) memcpy(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]);
-            ex->has_vp = 1;
-            ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
-            break;
-        }
-        case OP_SCISSOR:
-            ex->scissor = *(const p_scissor *)a;
-            ex->has_scissor = 1;
-            ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
-            break;
-        case OP_DEPTH_RANGE: {
-            const p_depth_range *r = a;
-            ex->depth_range[0] = r->n, ex->depth_range[1] = r->f;
-            ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
-            break;
-        }
-        case OP_STENCIL: {
-            const p_stencil *s = a;
-            for (int f = 0; f < 2; f++) {
-                if (!(s->face & (1 << f))) continue;
-                if (s->which == 0) ex->st_vmask[f] = (uint32_t)s->value_mask;
-                else if (s->which == 1) ex->st_wmask[f] = (uint32_t)s->mask;
-                else ex->st_ref[f] = (uint32_t)s->ref;
-            }
-            ex->dirty |= VK_EXEC_DIRTY_STENCIL;
-            break;
-        }
-        case OP_POLY_OFFSET:
-            ex->poly_offset = *(const p_poly_offset *)a;
-            ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS;
-            break;
-        case OP_BLEND_COLOR:
-            memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
-            ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
-            break;
-        case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
-        case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
-        case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
-        case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
-        case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
-        case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
         case OP_BARRIER: vk_exec_barrier(ex); break;
         case OP_WAIT_SYNC: break;   // submit preparation waited before any replay/snapshot; source may be gone
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
-            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) vk_exec_frame.draws_seen++, split_draws++;
+            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) {
+                vk_exec_frame.draws_seen++, split_draws++;
+                if (P.slot) par_watch();
+                if (par_no_split) vk_exec_draw_digest_draw(ex);
+            }
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
             draws_total += h->op != OP_UPDATE_UB;
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
@@ -955,7 +1642,8 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_CLEAR_BUF:
             vk_exec_op_xfer(ex, h->op, a);
             break;
-        default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+        default:
+            if (!state_op(ex, h->op, a)) rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
         }
         if (split_draws >= split_n) maybe_split(ex);
         h = nvn_op_next(h);
@@ -982,30 +1670,31 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
     x_here = 1;
     int memory = n || work;
     if (memory) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
+    P.next = NULL;
     if (work) work(ex, context);
     else {
+        // Shadow storage notes every GPU write at record time, in order: no helper there.
+        int par = vk_spec_on() && !vk_mem_shadow_on();
+        P.rec += par;
         for (int i = 0; i < n; i++) {
             if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
-            walk(ex, nvn_op_first(handles[i]), 0);
+            const op_hdr *first = nvn_op_first(handles[i]);
+            if (par) P.state = PS_SCAN, P.next = first;
+            walk(ex, first, 0);
         }
+        par_close(ex);
     }
     vk_exec_pass_end(ex);
     x_here = 0;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (memory) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory
-    if (ex->nviews) {
-        ViewList *l = malloc(sizeof *l + sizeof(VkImageView) * (size_t)ex->nviews);
-        if (!l) rt_fatal("vk: out of memory");
-        l->n = ex->nviews;
-        for (int i = 0; i < ex->nviews; i++) l->v[i] = ((ViewEnt *)ex->views)[i].view;
-        vk_completion_add(fence, free_views, l);
-        ex->nviews = 0;
-    }
+    views_to_fence(ex, fence);
     ex->cb = VK_NULL_HANDLE;
     if (memory) n_subs++;
     if ((rt_trace & RT_TRACE_PERF) && n_subs >= 240) {
         rt_log("perf: replay command buffer parts per submission %.2f", (double)(n_subs + n_parts) / (double)n_subs);
         n_subs = n_parts = 0;
+        par_log();
     }
     return ex->recorded - part_start;   // what the last part holds
 }

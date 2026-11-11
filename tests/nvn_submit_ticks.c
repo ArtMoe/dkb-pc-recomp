@@ -87,6 +87,14 @@ static void walk(VkExec *ex,const op_hdr *h,int depth) {
     const Recording *r=(const Recording*)h;
     for (int i=0;i<r->count;i++) report_counter(ex,&r->reports[i]);
 }
+// The helper thread is off here (vk_spec.c, the par_* functions of vk_exec.c): a submission is recorded by its one
+// thread. A checkout from before the helper uses none of these.
+enum { PS_SCAN };
+static struct { const op_hdr *next; int state; uint64_t rec; } P __attribute__((unused));
+int vk_spec_on(void) { return 0; }
+int vk_mem_shadow_on(void) { return 0; }
+static void par_close(VkExec *ex) { (void)ex; }
+static void par_log(void) {}
 @RECORD@
 static void complete_one(void) {
     if (consumed==jobs) abort();unsigned i=consumed++;

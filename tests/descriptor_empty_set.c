@@ -63,6 +63,10 @@ static void descriptor_state(VkExec *ex) { (void)ex; }
 uint32_t vk_texture_slots_gen(void) { return 0; }
 uint32_t vk_texture_epoch(void) { return 0; }
 uint32_t vk_sampler_gen(void) { return 0; }
+// TOTK_REPLAY_PAR=check's digest of what a draw bound: off.
+static struct { int on; } DIG;
+static void dig_bound(void) { abort(); }
+static void dig_desc(const VkPipeInfo *info,const VkDescSlot *d) { (void)info; (void)d; abort(); }
 
 // Bounded malloc storage supplies alignment without imposing an array's declared
 // effective type. The real producers decide packet sizes and copy every payload.

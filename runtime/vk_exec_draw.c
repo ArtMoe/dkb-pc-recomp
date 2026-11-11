@@ -10,6 +10,12 @@
 // reported with vk_gpu_written, from one completion callback once the submission's fence is done (the write watch
 // does not see GPU writes). Nothing here locks: it runs on the submitting thread under vk_sync_submit's lock.
 //
+// This file is compiled once more for each helper thread (vk_spec.h): vk_exec_draw2.c to vk_exec_draw6.c define
+// VK_EXEC_DRAW_HELPER as their number. Such a copy is that helper's translator: its statics are its own, and where the
+// replay thread would write memory the guest reads, upload a texture, make an image or a stand-in, or wait for a
+// pipeline, it gives its part up (vk_spec_fail) and the replay thread translates those draws. vk_spec.h lists what a
+// helper does make.
+//
 // Provenance: the op semantics (bind ops, program and slot conventions, draw and dispatch flow, vertex streams with a
 // zeroed buffer for unbound ones) follow MacNativeGames games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m:7409-7460,
 // 9365-9488, 9489-9921, 10013-10079 @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the uniform-buffer spans, texture and
@@ -29,7 +35,40 @@
 #include "nvn_indirect_reset.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_spec.h"
 #include "platform/platform.h"
+
+// vk_exec_draw2.c to vk_exec_draw6.c compile this file again with VK_EXEC_DRAW_HELPER defined as their number: the
+// translator of one helper thread each (vk_spec.c), which records part of a submission into its own
+// command buffer while the replay thread and the other helpers record the parts before and after it. Every static
+// below then exists once per thread, which is what lets them run without a lock: the command-buffer state B, the
+// descriptor memos, the transient chunks and pools of CbRes. What stays single is compiled only here: the stand-ins
+// and the image views of registered textures (a helper gets them through vk_exec_draw_standins,
+// vk_exec_draw_storage_standin and vk_exec_draw_view; a view it asks for that does not exist yet is created there, in
+// the one cache, under the texture lock). A helper differs where the replay thread's work has an effect
+// another thread could see: it gives up its part instead (vk_spec_fail), and the replay thread records that part
+// itself. A copy's exported names carry its number (vk_exec_draw2_op); vk_exec.c reaches them through the copy's
+// table (vk_exec_draw2_helper, at the end of this file).
+#ifdef VK_EXEC_DRAW_HELPER
+#define HELPER_NAME_(n, name) vk_exec_draw##n##_##name
+#define HELPER_NAME__(n, name) HELPER_NAME_(n, name)
+#define HELPER_NAME(name) HELPER_NAME__(VK_EXEC_DRAW_HELPER, name)
+#define vk_exec_draw_new_cb HELPER_NAME(new_cb)
+#define vk_exec_draw_rebase HELPER_NAME(rebase)
+#define vk_exec_op_draw HELPER_NAME(op)
+#define vk_exec_reset_indirect HELPER_NAME(reset_indirect)
+#define vk_c0_fill HELPER_NAME(c0_fill)
+#define vk_exec_draw_digest_begin HELPER_NAME(digest_begin)
+#define vk_exec_draw_digest_draw HELPER_NAME(digest_draw)
+#define vk_exec_draw_digest_end HELPER_NAME(digest_end)
+static VkExecFrame HELPER_NAME(frame);     // its own counters, added to vk_exec_frame when its part is taken
+#define vk_exec_frame HELPER_NAME(frame)
+#define vk_mem_count(cls, use, bytes) ((void)0)   // the census is not atomic: the helper's bytes are left out of it
+#undef VK_MEM_BOUND
+#define VK_MEM_BOUND(sp) ((void)0)
+#define vk_sync_noting() 0                  // the slow-part note belongs to the replay thread's command buffer
+#define vk_exec_oq_draw(ex) ((void)0)       // no helper part while a counter is counting (vk_spec.c)
+#endif
 
 #define MAX_BINDINGS 128
 // NVN 2 compute parameter layout of the program being dispatched (gfx_shader_c0_layout), NULL for NVN 1: read by
@@ -319,6 +358,9 @@ static uint32_t written_hash(uint64_t addr, uint64_t size) {
 // Each distinct range once per command buffer, in first-write order. A scene with thousands of written ranges and tens
 // of thousands of draws binding them spent most of the replay searching this list, so the search goes through a table.
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
+#ifdef VK_EXEC_DRAW_HELPER
+    if (vk_spec_fail(VK_SPEC_WRITE)) return;   // the order of GPU writes is the replay thread's to keep
+#endif
     CbRes *r = cb_res(ex);
     if ((uint32_t)r->nwritten * 2 >= r->written_slots) {
         uint32_t slots = r->written_slots ? r->written_slots * 2 : 256;
@@ -372,6 +414,9 @@ static int reset_targets_overlap(const uint64_t *pointers, uint32_t count) {
 // The pointer list may have been written earlier in this submission. Read its GPU-visible contents after submitting
 // that prefix, then validate every target before recording a write. Null pointers have no record to reset.
 int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_bytes, int64_t first, int64_t count) {
+#ifdef VK_EXEC_DRAW_HELPER
+    if (vk_spec_fail(VK_SPEC_WRITE)) return 0;   // reads a buffer back and rewrites it: both need the earlier parts
+#endif
     NvnIndirectResetList list;
     if (!nvn_indirect_reset_list(list_addr, descriptor_bytes, first, count, &list)) return 0;
     uint64_t *pointers = malloc(list.bytes);
@@ -438,6 +483,7 @@ static const struct { VkImageType t; VkImageViewType vt; uint32_t layers; VkSamp
     {VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, 1, VK_SAMPLE_COUNT_4_BIT, 0},
     {VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D_ARRAY, 1, VK_SAMPLE_COUNT_4_BIT, 0}};
 
+#ifndef VK_EXEC_DRAW_HELPER
 // A 1x1 stand-in image of view type dinfo[i] in `fmt`, moved to GENERAL by the upload batch (which reaches the queue before
 // the submission that uses it). *sview is the view a storage descriptor takes (a cube becomes a 2D array).
 static void make_dummy(int i, VkFormat fmt, VkImage *image, VmaAllocation *alloc, VkImageView *view, VkImageView *sview) {
@@ -470,6 +516,7 @@ static void make_dummy(int i, VkFormat fmt, VkImage *image, VmaAllocation *alloc
     vkCmdPipelineBarrier2(cb, &di);
     vk_upload_end();
 }
+#endif
 
 // Storage image stand-ins in the format a shader declares (GfxShaderRes.format: Ryujinx TextureFormat order); Vulkan wants
 // the view format to match the declaration. Created on first use.
@@ -483,24 +530,54 @@ static const VkFormat tex_format[40] = {
     VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_UINT,
     VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_SINT,
     VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2B10G10R10_UINT_PACK32, VK_FORMAT_B10G11R11_UFLOAT_PACK32};
+#ifndef VK_EXEC_DRAW_HELPER
 static struct { int used, di; VkFormat fmt; VkImage image; VmaAllocation alloc; VkImageView view, sview; } SD[48];
+static PlatMutex sd_lock = PLAT_MUTEX_INIT;   // SD: the replay thread adds entries while the helper thread looks them up
+
+// The storage stand-in of view type dinfo[di] in fmt; VK_NULL_HANDLE when the table is full or, with create 0 (the
+// helper thread, which makes none), when there is none yet.
+VkImageView vk_exec_draw_storage_standin(int di, VkFormat fmt, int create) {
+    VkImageView v = VK_NULL_HANDLE;
+    plat_mutex_lock(&sd_lock);
+    for (int i = 0; i < 48; i++) {
+        if (!SD[i].used) {
+            if (!create) break;
+            make_dummy(di, fmt, &SD[i].image, &SD[i].alloc, &SD[i].view, &SD[i].sview);
+            SD[i].used = 1, SD[i].di = di, SD[i].fmt = fmt;
+            v = SD[i].sview;
+            break;
+        }
+        if (SD[i].di == di && SD[i].fmt == fmt) { v = SD[i].sview; break; }
+    }
+    plat_mutex_unlock(&sd_lock);
+    return v;
+}
+
+// The helper thread's translator starts from a copy of the stand-ins: 0 while they do not exist yet.
+int vk_exec_draw_standins(void *out, size_t bytes) {
+    if (!Z.ready || bytes != sizeof Z) return 0;
+    memcpy(out, &Z, sizeof Z);
+    return 1;
+}
+#endif
 
 static VkImageView storage_dummy(int di, int code) {
     VkFormat fmt = code > 0 && code < 40 ? tex_format[code] : VK_FORMAT_R8G8B8A8_UNORM;
     if (fmt == VK_FORMAT_R8G8B8A8_UNORM || dinfo[di].s != VK_SAMPLE_COUNT_1_BIT) return Z.img[di].sview;
-    for (int i = 0; i < 48; i++) {
-        if (!SD[i].used) {
-            SD[i].used = 1, SD[i].di = di, SD[i].fmt = fmt;
-            make_dummy(di, fmt, &SD[i].image, &SD[i].alloc, &SD[i].view, &SD[i].sview);
-            return SD[i].sview;
-        }
-        if (SD[i].di == di && SD[i].fmt == fmt) return SD[i].sview;
-    }
-    return Z.img[di].sview;
+#ifdef VK_EXEC_DRAW_HELPER
+    VkImageView v = vk_exec_draw_storage_standin(di, fmt, 0);
+    if (!v) vk_spec_fail(VK_SPEC_STANDIN);
+#else
+    VkImageView v = vk_exec_draw_storage_standin(di, fmt, 1);
+#endif
+    return v ? v : Z.img[di].sview;
 }
 
 static void dummies_init(void) {
     if (Z.ready) return;
+#ifdef VK_EXEC_DRAW_HELPER
+    vk_spec_fail(VK_SPEC_STANDIN);   // helper_begin copies the replay thread's: a helper makes none
+#else
     VkCtx *c = vk_ctx();
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = ZERO_BYTES,
                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -524,12 +601,35 @@ static void dummies_init(void) {
     for (int i = 0; i < DV_COUNT; i++)
         make_dummy(i, VK_FORMAT_R8G8B8A8_UNORM, &Z.img[i].image, &Z.img[i].alloc, &Z.img[i].view, &Z.img[i].sview);
     Z.ready = 1;
+#endif
 }
 
+// What this copy of the translator keeps from one command buffer to the next: the recycled descriptor pools and
+// transient chunks, the resource lists by pipeline and the resources of the command buffer it recorded last. The
+// device must be idle, with every completion run.
+static void kept_release(VkCtx *c) {
+    nvn_hm_clear(&rs_lists, free);
+    rs_last = NULL, rs_last_l = NULL;
+    for (int i = 0; i < nspare_pool; i++) vkDestroyDescriptorPool(c->device, spare_pool[i], NULL);
+    for (int i = 0; i < nspare_chunk; i++) vmaDestroyBuffer(c->vma, spare_chunk[i].buf, spare_chunk[i].alloc);
+    nspare_pool = nspare_chunk = 0;
+    cur = NULL, cur_fence = 0;
+}
+
+#ifdef VK_EXEC_DRAW_HELPER
+// This helper's part of vk_exec_draw_shutdown, which calls it while the helper thread is idle: what the copy kept goes,
+// and it forgets its copy of the stand-ins, whose handles the replay thread's translator destroys. helper_begin takes
+// them again from the next device.
+static void helper_shutdown(void) {
+    VkCtx *c = vk_ctx();
+    if (c) kept_release(c);
+    memset(&Z, 0, sizeof Z);
+}
+#else
 static void twins_release(VkCtx *c);
 
-// Releases the stand-ins and the depth twins. The device must be idle; the game path leaves them to process exit like
-// the pipelines.
+// Releases the stand-ins, the depth twins and what every translator kept, the helper threads' included. The device
+// must be idle; the game path leaves them to process exit like the pipelines.
 void vk_exec_draw_shutdown(void) {
     VkCtx *c = vk_ctx();
     if (!c) return;
@@ -545,12 +645,11 @@ void vk_exec_draw_shutdown(void) {
         vmaDestroyImage(c->vma, SD[i].image, SD[i].alloc);
     }
     memset(SD, 0, sizeof SD);
-    nvn_hm_clear(&rs_lists, free);
-    rs_last = NULL, rs_last_l = NULL;
-    for (int i = 0; i < nspare_pool; i++) vkDestroyDescriptorPool(c->device, spare_pool[i], NULL);
-    for (int i = 0; i < nspare_chunk; i++) vmaDestroyBuffer(c->vma, spare_chunk[i].buf, spare_chunk[i].alloc);
-    nspare_pool = nspare_chunk = 0;
-    cur = NULL, cur_fence = 0;
+    kept_release(c);
+    static const VkExecHelper *const helpers[] = {&vk_exec_draw2_helper, &vk_exec_draw3_helper, &vk_exec_draw4_helper,
+                                                  &vk_exec_draw5_helper, &vk_exec_draw6_helper};
+    _Static_assert(sizeof helpers / sizeof helpers[0] == VK_SPEC_HELPERS, "every helper translator is shut down");
+    for (int i = 0; i < VK_SPEC_HELPERS; i++) helpers[i]->shutdown();
     vk_usnap_shutdown();
     if (Z.ready) {
         vkDestroyBufferView(c->device, Z.zview, NULL);
@@ -558,6 +657,7 @@ void vk_exec_draw_shutdown(void) {
     }
     memset(&Z, 0, sizeof Z);
 }
+#endif
 
 // ---- resource types
 
@@ -598,6 +698,7 @@ static int gfx_type_of(const VkTexImage *img, const view_t *v, int hv) {
     }
 }
 
+#ifndef VK_EXEC_DRAW_HELPER   // the views of registered textures are kept once, by the replay thread's translator
 static VkComponentSwizzle swz_of(uint8_t s) {
     switch (s) {
     case NVN_TEXTURE_SWIZZLE_ZERO: return VK_COMPONENT_SWIZZLE_ZERO;
@@ -742,6 +843,15 @@ void vk_exec_image_gone(VkImage image) {
         free(n);
     }
 }
+
+// get_view for the helper threads' translators, which keep no views of their own: a helper's lookup reads this cache
+// and on a miss creates the view in it, as the replay thread would at the same draw. Texture lock held.
+VkImageView vk_exec_draw_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+    return get_view(ex, img, v, hv, rtype, storage);
+}
+#else
+#define get_view vk_exec_draw_view
+#endif
 
 // ---- program to shaders
 
@@ -1056,12 +1166,17 @@ static inline uint64_t dp_now(void) {
 #endif
 }
 
+// The replay thread's draws only: a helper's copy would log a profile of its own parts in the same words.
 static int dp_on(void) {
+#ifdef VK_EXEC_DRAW_HELPER
+    return 0;
+#else
     if (DP.on < 0) {
         const char *e = cfg_get("TOTK_DRAW_PROFILE");
         DP.on = e && *e && strcmp(e, "0");
     }
     return DP.on;
+#endif
 }
 
 #define DP_MARK(i) do { if (DP.active) { uint64_t t_ = dp_now(); DP.ticks[i] += t_ - DP.t; DP.t = t_; } } while (0)
@@ -1109,6 +1224,9 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (n > max) n = max;
     if (!n) return 0;
     if (sp.offset % align == 0) {
+#ifdef VK_EXEC_DRAW_HELPER
+        if (written && vk_spec_fail(VK_SPEC_WRITE)) return 0;   // as note_written
+#endif
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
@@ -1529,7 +1647,12 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
         if (mode == VK_FEEDBACK_LAYOUT)
             for (uint32_t i = 0; i < 9; i++) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
-                if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
+                if (!((d >> i & 1) && t->img && t->img->fb_usage) || vk_tex_fb_learned(t->img)) continue;
+#ifdef VK_EXEC_DRAW_HELPER
+                if (vk_spec_fail(VK_SPEC_FEEDBACK)) return 0;   // the pass the replay thread has open would begin differently
+#endif
+                vk_tex_fb_learn((VkTexImage *)t->img);
+                vk_spec_world_changed();
             }
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
@@ -1711,6 +1834,7 @@ static VkFormat twin_format(const VkTexImage *img) {
     return compares[i] ? VK_FORMAT_UNDEFINED : df;
 }
 
+#ifndef VK_EXEC_DRAW_HELPER
 static void twins_release(VkCtx *c) {
     for (int i = 0; i < TWINS; i++) {
         for (int k = 0; k < 2; k++)
@@ -1721,6 +1845,7 @@ static void twins_release(VkCtx *c) {
     if (twin_buf) vmaDestroyBuffer(c->vma, twin_buf, twin_buf_mem);
     twin_buf = VK_NULL_HANDLE, twin_buf_mem = NULL, twin_buf_cap = 0;
 }
+#endif
 
 // The twin of img holding img's current texels, the copies recorded into ex->cb; NULL when img needs none or it cannot
 // be made.
@@ -1831,9 +1956,11 @@ static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage,
     if (v) out->imageView = v, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
+#ifndef VK_EXEC_DRAW_HELPER   // the replay thread's pools only: a helper's copy counts its own and reports none
 void vk_exec_pool_counts(uint64_t *created, uint64_t *taken) {   // TOTK_TRACE=perf, replay thread
     *created = pools_created, *taken = pools_taken;
 }
+#endif
 
 static VkDescriptorSet alloc_set(VkExec *ex, VkDescriptorSetLayout layout) {
     CbRes *r = cb_res(ex);
@@ -2167,6 +2294,94 @@ static void write_set(const VkPipeInfo *info, uint32_t s, VkDescriptorSet set, c
     vkUpdateDescriptorSets(vk_ctx()->device, i1 - i0, w + i0, 0, NULL);
 }
 
+// ---- TOTK_REPLAY_PAR=check: what each draw bound and recorded, for the comparison of the two translators
+#define DIG_MAX 8192   // vk_exec.c PAR_RUN_MAX
+#define DIG_RES 9      // the words of a digest that describe descriptors
+static struct {
+    int on;
+    uint32_t n;                        // draws closed
+    int rec;                           // VkExec.recorded at the last one
+    uint64_t res[DIG_RES];             // the descriptors of the last build (bind_resources)
+    uint64_t cur[VK_EXEC_DIG_W], d[DIG_MAX][VK_EXEC_DIG_W];
+} DIG;
+
+static uint64_t dig_mix(uint64_t h, uint64_t v) { return ((h ^ v) * 0x9E3779B97F4A7C15ull) ^ (h >> 29); }
+
+// The descriptors a draw has bound are those of the last build: a draw with the inputs of the one before it builds
+// nothing (TOTK_BIND_SKIP), and whether a draw is such a repeat is each translator's own matter (a texture registered
+// between two draws makes one build again and not the other).
+static void dig_bound(void) {
+    for (int w = 0; w < DIG_RES; w++) DIG.cur[w] = dig_mix(DIG.cur[w], DIG.res[w]);
+}
+
+// The descriptors of a build. A scratch buffer is this translator's own: its range and its bytes count, not where
+// they are.
+static void dig_desc(const VkPipeInfo *info, const VkDescSlot *d) {
+    uint64_t *h = DIG.res;
+    uint32_t nd = 0;
+    memset(DIG.res, 0, sizeof DIG.res);
+    h[8] = (uintptr_t)info->layout;
+    for (uint32_t i = 0; i < info->n_bindings; i++) {
+        const VkPipeBinding *b = &info->bindings[i];
+        uint32_t cnt = b->count ? b->count : 1;
+        for (uint32_t k = 0; k < cnt; k++) {
+            const VkDescSlot *o = &d[nd + k];
+            if (b->kind == GFX_RES_TEX || b->kind == GFX_RES_IMG) {
+                h[0] = dig_mix(h[0], (uintptr_t)o->image.imageView);
+                h[1] = dig_mix(h[1], (uintptr_t)o->image.sampler);
+                h[2] = dig_mix(h[2], (uint64_t)o->image.imageLayout);
+                continue;
+            }
+            int w = b->kind == GFX_RES_SSBO ? 6 : 3;
+            const Chunk *own = NULL;
+            for (int c = 0; cur && c < cur->nchunks && !own; c++)
+                if (cur->chunks[c].buf == o->buffer.buffer) own = &cur->chunks[c];
+            h[w] = dig_mix(h[w], o->buffer.range);
+            if (!own) h[w + 1] = dig_mix(dig_mix(h[w + 1], (uintptr_t)o->buffer.buffer), o->buffer.offset);
+            else if (o->buffer.offset + o->buffer.range <= own->size)
+                h[5] = dig_mix(h[5], nvn_hm_hash(own->map + o->buffer.offset, (uint32_t)o->buffer.range));
+        }
+        nd += cnt;
+    }
+    dig_bound();
+}
+
+void vk_exec_draw_digest_begin(const VkExec *ex) {
+    DIG.on = 1, DIG.n = 0, DIG.rec = ex->recorded;
+    memset(DIG.cur, 0, sizeof DIG.cur);
+}
+
+void vk_exec_draw_digest_draw(const VkExec *ex) {
+    if (!DIG.on) return;
+    DIG.cur[8] = dig_mix(DIG.cur[8], (uintptr_t)B.pipe[0]);
+    DIG.cur[10] = (uint64_t)(ex->recorded - DIG.rec);
+    if (DIG.n < DIG_MAX) memcpy(DIG.d[DIG.n++], DIG.cur, sizeof DIG.cur);
+    memset(DIG.cur, 0, sizeof DIG.cur);
+    DIG.rec = ex->recorded;
+}
+
+// The dynamic state and the vertex buffers a draw has bound.
+static void dig_state(void) {
+    if (B.st_valid) DIG.cur[8] = dig_mix(DIG.cur[8], nvn_hm_hash(&B.st, sizeof B.st));
+    if (!B.vb_valid) return;
+    uint64_t h = dig_mix(nvn_hm_hash(B.vb, sizeof B.vb), nvn_hm_hash(B.vo, sizeof B.vo));
+    DIG.cur[9] = dig_mix(DIG.cur[9], dig_mix(h, nvn_hm_hash(B.vsz, sizeof B.vsz)));
+}
+
+// The index buffer of a draw; data: the indices this translator made itself, in a buffer of its own.
+static void dig_index(VkBuffer b, VkDeviceSize o, const void *data, uint64_t bytes) {
+    if (!DIG.on) return;
+    DIG.cur[9] = data ? dig_mix(DIG.cur[9], nvn_hm_hash(data, (uint32_t)bytes))
+                      : dig_mix(dig_mix(DIG.cur[9], (uintptr_t)b), o);
+}
+
+uint32_t vk_exec_draw_digest_end(const VkExec *ex, const uint64_t **d) {
+    vk_exec_draw_digest_draw(ex);
+    DIG.on = 0;
+    *d = &DIG.d[0][0];
+    return DIG.n;
+}
+
 // Writes the pipeline's sets from the bound state: set 0, and set 1 with independent layouts. Each is pushed into the
 // command buffer, or allocated, written and bound; a graphics set whose contents equal the last one allocated for that
 // set number in this command buffer is reused, and bound again only when another layout or a push came between. A
@@ -2189,6 +2404,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             BS.bind_skip++;
             ex->recorded++;
             DP_MARK(DP_SETS);
+            if (DIG.on) dig_bound();
             return;
         }
         B.res_valid = 0;   // until the build below ends
@@ -2288,6 +2504,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         DP_MARK(DP_TEX);
     }
     tex_locked = 0;
+    if (DIG.on) dig_desc(info, d);
     // Set 1's first descriptor is noted when the loop reaches its first binding. A set 1 without bindings (a fragment
     // stage with no resources) starts at the end instead, so set 0's byte count (d0[1] - d0[0]) covers its descriptors.
     // Left at 0, it pushed set 0's template with 0 bytes copied into the recording, and the driver read the
@@ -2792,6 +3009,9 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
     if (want_gs < 0) return 0;
     cb_res(ex);
     dummies_init();
+#ifdef VK_EXEC_DRAW_HELPER
+    if (!Z.ready) return 0;
+#endif
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
         uint32_t w, h;
         vk_exec_noatt_dims(ex, &w, &h);
@@ -2800,6 +3020,11 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (!ex->in_pass) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT | VK_EXEC_DIRTY_SCISSOR;
     vk_exec_pass_begin(ex);
+#ifdef VK_EXEC_DRAW_HELPER
+    // A part that is lost is dropped whole. Its pass may lack a target the helper could not resolve, so the draw
+    // asks for no pipeline and records nothing.
+    if (vk_spec_failed()) return 0;
+#endif
     VkRect2D sc = vk_exec_scissor(ex);
     DP_MARK(DP_PASS);
     if (!sc.extent.width || !sc.extent.height) return 0;
@@ -2856,6 +3081,9 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
     if (vs_wait || fs_wait || gs_wait) {
+#ifdef VK_EXEC_DRAW_HELPER
+        if (vk_spec_fail(VK_SPEC_PENDING)) return 0;   // whether to wait or skip is decided on the replay thread
+#endif
         if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
         perf_count(PERF_CNT_ONESHOT_WAIT);
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
@@ -2893,6 +3121,9 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
         wait_ms = (uint32_t)(wait_left_ns / 1000000);
         if (wait_ms) t0 = kern_now_ns();
     }
+#ifdef VK_EXEC_DRAW_HELPER
+    wait_ms = 0, t0 = 0;   // the helper never waits: a pending pipeline gives its part back
+#endif
     // The previous draw's pipeline while its state repeats (PM, TOTK_PIPE_MEMO=0 turns it off): the cache key is made
     // from the state alone, and a pipeline once found only changes from its fast link to its optimised build, read
     // from the info the cache entry keeps.
@@ -2910,6 +3141,9 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
             wait_left_ns = spent < wait_left_ns ? wait_left_ns - spent : 0;
         }
         why = oneshot > 0 ? "one-shot, shader" : wait_ms ? "full-screen" : NULL;
+#ifdef VK_EXEC_DRAW_HELPER
+        if (pending && vk_spec_fail(VK_SPEC_PENDING)) return 0;
+#endif
         if (pending && oneshot < 0 && !vk_exec_targets_recent(ex, skip >= 1)) {
             perf_count(PERF_CNT_ONESHOT_WAIT);
             why = "one-shot";
@@ -2948,6 +3182,7 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
     DP_MARK(DP_FEEDBACK);
     bind_vertex_buffers(ex);
     DP_MARK(DP_VB);
+    if (DIG.on) dig_state();
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
     DP_MARK(DP_TAIL);
@@ -2978,6 +3213,7 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
     VkBuffer b;
     VkDeviceSize o;
     memcpy(scratch(ex, bytes, &b, &o), data, bytes);
+    dig_index(b, o, data, bytes);
     vkCmdBindIndexBuffer(ex->cb, b, o, type);
     ex->recorded++;
 }
@@ -3096,6 +3332,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
     } else {
         VK_MEM_USE(sp);
+        dig_index(sp.buffer, sp.offset, NULL, 0);
         vkCmdBindIndexBuffer(ex->cb, sp.buffer, sp.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         ex->recorded++;
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
@@ -3123,6 +3360,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     vk_exec_frame.draws++;
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
+    dig_index(ib.buffer, ib.offset, NULL, 0), dig_index(ip.buffer, ip.offset, NULL, 0);
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
@@ -3609,3 +3847,39 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     DP.ticks[DP_OPS] += total > inside ? total - inside : 0;
     DP.ops++;
 }
+
+// ---- several translators over one submission (vk_spec.c)
+
+// The VkExec this translator works on was replaced by another thread's (a helper starting a part from a copy of the
+// replay thread's state, or the replay thread taking over where a helper's part ended): forget what was derived from
+// the bind ops seen so far and what is bound on the command buffer. Every other memo compares the values it was made from.
+void vk_exec_draw_rebase(void) {
+    bind_gen++;
+    for (int i = 0; i < 6; i++) ssbo_serial[i]++;
+    SM.valid = 0, PM.valid = 0;
+    vk_exec_draw_new_cb();
+}
+
+#ifndef VK_EXEC_DRAW_HELPER
+// The inline uniform updates noted so far, for a helper's ubo_ptr: only the entries in use are copied.
+void vk_exec_draw_updates(void *out, size_t bytes) {
+    if (bytes != sizeof UPD) rt_fatal("vk_exec: the translators disagree about the update ring");
+    uint32_t n = UPD.n < UPD_N ? UPD.n : UPD_N;
+    memcpy(out, &UPD, offsetof(typeof(UPD), u) + n * sizeof UPD.u[0]);
+}
+#else
+// Before this copy's helper thread is handed a part (it is idle): the translator takes the stand-ins and the uniform
+// updates the replay thread has, and forgets what it derived from the previous part's state. 0: no stand-ins yet.
+// The stand-ins are copied for every part: the handles of an earlier copy are destroyed when the device is shut down
+// and made again (vk_exec_draw_shutdown; vk_exec_probe.c and vk_copy_probe.c do that between cases).
+static int helper_begin(void) {
+    if (!vk_exec_draw_standins(&Z, sizeof Z)) return 0;
+    vk_exec_draw_updates(&UPD, sizeof UPD);
+    vk_exec_draw_rebase();
+    return 1;
+}
+
+const VkExecHelper HELPER_NAME(helper) = {helper_begin, vk_exec_op_draw, vk_exec_draw_digest_begin,
+                                          vk_exec_draw_digest_draw, vk_exec_draw_digest_end, helper_shutdown,
+                                          &vk_exec_frame};
+#endif

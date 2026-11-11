@@ -30,6 +30,7 @@
 #include "host.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_spec.h"
 
 #ifdef _WIN32
 #include "dlss_mv_spv.h"
@@ -96,14 +97,22 @@ static struct {
 // them apart. Update 3.2.0 gives the same layout in play (checked by printing the rows: an orthonormal view, the
 // view-projection as their product, a projection of near 1 and far 5000).
 #define CAM_BLOCK 0x980u
-static struct {
+typedef struct {
     int have;               // a scene draw since the last evaluation
     uint32_t serial;        // VkExec.pass_serial of the pass it was noted in (one note per pass)
     VkTexImage z;           // the depth image's fields vk_exec_target_view reads (a copy: the texture's own may go)
     VkFormat zfmt;
     uint32_t zlevel, zlayer;
     float cam[44];          // camera block rows 0-10: view, view-projection, projection
-} S;
+} Scene;
+static Scene S;
+// A helper thread (vk_spec.h) translates a part of a run while the replay thread translates the draws before it, and
+// a run holds several passes. Each helper notes its part's scene here, and whether a draw of it took the jitter: the
+// replay thread clears both when it launches the part (vk_dlss_part_begin) and makes them the frame's when it takes
+// the part (vk_dlss_part_taken), and it takes the parts in the order of their draws. So the notes keep that order, and
+// a part that is dropped notes nothing.
+static Scene SH[VK_SPEC_HELPERS];
+static int used_h[VK_SPEC_HELPERS];
 
 // The jitter of the scene's draws and the camera of the last evaluation. Draws into the depth image the last temporal
 // evaluation used are jittered by a Halton(2,3) sub-pixel offset of the viewport; the offset moves on at each
@@ -438,41 +447,69 @@ static void next_jitter(uint32_t w, uint32_t ow) {
 
 static uint64_t frames_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED); }
 
+// J.depth is read by the helper translators (vk_spec.h) while the replay thread may clear it, here or in the release
+// below, so it is loaded and stored atomically. The rest of J is written only where no helper part is translated.
+static VkImage jdepth(void) { return __atomic_load_n(&J.depth, __ATOMIC_RELAXED); }
+static void jdepth_set(VkImage v) { __atomic_store_n(&J.depth, v, __ATOMIC_RELAXED); }
+
 void vk_dlss_jitter(VkImage depth, float j[2]) {
-    if (!J.depth || depth != J.depth || state <= 0) return;
+    VkImage d = jdepth();
+    if (!d || depth != d || state <= 0) return;
     if (frames_now() - J.frame > 2) {   // DLSS has stopped running (a menu without the upscaler, a failure)
-        J.depth = VK_NULL_HANDLE;
+        if (!vk_spec_helper()) jdepth_set(VK_NULL_HANDLE);
         return;
     }
     j[0] = J.jx, j[1] = J.jy;
-    J.used = 1;
+    if (vk_spec_helper()) used_h[vk_spec_here - 1] = 1;
+    else J.used = 1;
 }
 
 void vk_dlss_scene_draw(const VkExec *ex) {
     if (state < 0) return;
     const VkExecTarget *z = &ex->depth;
     const p_bind_buf *b = &ex->ubo[0][0];   // vertex bank c3: the replay keeps the user banks from c3 on
-    if ((S.have && S.serial == ex->pass_serial) || b->size != CAM_BLOCK || !b->addr || !z->img || z->img->image != z->image ||
+    Scene *s = vk_spec_helper() ? &SH[vk_spec_here - 1] : &S;
+    if ((s->have && s->serial == ex->pass_serial) || b->size != CAM_BLOCK || !b->addr || !z->img || z->img->image != z->image ||
         z->is3d || z->samples > 1 || !ex->color[0].image || !(z->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         return;
     if (J.w && (z->width != J.w || z->height != J.h)) return;   // a shadow map, a probe, a half-size pass
     // The block as of the submit call (vk_usnap.c): the game rewrites its uniform blocks soon after submitting, and a
     // GPU-side update never shows in guest memory. Not snapshotted (or dropped by such an update): no scene noted, so
     // this frame runs spatially.
-    const void *cam = vk_usnap_bytes(b->addr, sizeof S.cam);
+    const void *cam = vk_usnap_bytes(b->addr, sizeof s->cam);
     if (!cam) return;
     vk_texture_lock();   // against vk_dlss_image_gone (textures are destroyed on other threads)
-    memcpy(S.cam, cam, sizeof S.cam);
-    S.z = *z->img;
-    S.zfmt = z->format, S.zlevel = z->level, S.zlayer = z->base_layer;
-    S.z.width = z->width, S.z.height = z->height;   // of the level drawn
-    S.have = 1, S.serial = ex->pass_serial;
+    memcpy(s->cam, cam, sizeof s->cam);
+    s->z = *z->img;
+    s->zfmt = z->format, s->zlevel = z->level, s->zlayer = z->base_layer;
+    s->z.width = z->width, s->z.height = z->height;   // of the level drawn
+    s->have = 1, s->serial = ex->pass_serial;
+    vk_texture_unlock();
+}
+
+void vk_dlss_part_begin(int k) {
+    if (!SH[k].have && !used_h[k]) return;
+    vk_texture_lock();
+    SH[k].have = 0, used_h[k] = 0;
+    vk_texture_unlock();
+}
+
+// A helper's pass serials are its own: the replay thread goes on with a serial above both (vk_exec.c par_join), so
+// its next scene draw notes again.
+void vk_dlss_part_taken(int k) {
+    if (!SH[k].have && !used_h[k]) return;
+    vk_texture_lock();
+    if (SH[k].have) S = SH[k];
+    if (used_h[k]) J.used = 1;
+    SH[k].have = 0, used_h[k] = 0;
     vk_texture_unlock();
 }
 
 void vk_dlss_image_gone(VkImage image) {
     if (image == S.z.image) S.have = 0;
-    if (image == J.depth) J.depth = VK_NULL_HANDLE, J.prev_ok = 0;
+    for (int k = 0; k < VK_SPEC_HELPERS; k++)
+        if (image == SH[k].z.image) SH[k].have = 0;
+    if (image == jdepth()) jdepth_set(VK_NULL_HANDLE), J.prev_ok = 0;
 }
 
 // The mode follows the scale: 1.5x quality, 1.7x balanced, 2x performance, 3x ultra performance, 1x DLAA.
@@ -573,7 +610,7 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
                                                     S.zlevel, S.zlayer, 1, 0)
                               : VK_NULL_HANDLE;
     // The last frame's camera only when it is the frame just before (a gap: a menu, a load, frames at another size).
-    int prev = J.prev_ok && J.depth == S.z.image && frames_now() - J.frame <= 2;
+    int prev = J.prev_ok && jdepth() == S.z.image && frames_now() - J.frame <= 2;
     vk_texture_unlock();
     if (temporal) {
         for (int i = 0; i < 16; i++) vp[i] = S.cam[12 + i];
@@ -614,7 +651,7 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     if (NGX_FAILED(r)) {
         char why[64];
         snprintf(why, sizeof why, "evaluating DLSS failed (%#x)", r);
-        J.depth = VK_NULL_HANDLE;
+        jdepth_set(VK_NULL_HANDLE);
         fail(why);
         return -1;
     }
@@ -625,9 +662,9 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
     if (temporal) {
         memcpy(J.prev_vp, vp, sizeof vp);
         memcpy(J.prev_view, S.cam, sizeof J.prev_view);
-        J.prev_ok = 1, J.depth = S.z.image;
+        J.prev_ok = 1, jdepth_set(S.z.image);
     } else {
-        J.prev_ok = 0, J.depth = VK_NULL_HANDLE;
+        J.prev_ok = 0, jdepth_set(VK_NULL_HANDLE);
     }
     next_jitter(w, ow);
     // A summary at the first evaluation and then every 1800 (half a minute of DLSS at 60 fps; the game skips its
@@ -660,6 +697,8 @@ void vk_dlss_release(void) {   // device idle
     }
     memset(&F, 0, sizeof F);
     memset(&S, 0, sizeof S);
+    memset(&SH, 0, sizeof SH);
+    memset(used_h, 0, sizeof used_h);
     memset(&J, 0, sizeof J);
     params = NULL;
     if (state > 0) state = 0;   // a new device initialises NGX again; a failure stays a failure
@@ -677,6 +716,8 @@ int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, con
 void vk_dlss_release(void) {}
 void vk_dlss_jitter(VkImage depth, float j[2]) { (void)depth, (void)j; }
 void vk_dlss_scene_draw(const VkExec *ex) { (void)ex; }
+void vk_dlss_part_begin(int k) { (void)k; }
+void vk_dlss_part_taken(int k) { (void)k; }
 void vk_dlss_image_gone(VkImage image) { (void)image; }
 
 #endif

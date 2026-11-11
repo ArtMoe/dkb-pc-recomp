@@ -22,6 +22,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+#include "vk_spec.h"
 #include "platform/platform.h"
 
 #define ALIGN 256u
@@ -55,6 +56,12 @@ static struct {
     // since the last summary
     uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
 } U;
+
+// The helper threads (vk_spec.h) look regions up in vk_usnap_find while the replay thread drops some of them
+// (vk_usnap_drop), so a region's dropped mark and U.gen are loaded and stored atomically. A helper part that read a
+// region before it was dropped is itself dropped, because the generation moved (vk_exec.c par_join). The rest of U
+// changes only in vk_usnap_begin and vk_usnap_end, where no helper part is out.
+static void gen_bump(void) { __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELEASE); }
 
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
@@ -221,7 +228,7 @@ static void summary(void) {
 
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1;   // stored +1: 0 is "not read yet"
-    U.on = 0, U.fence = fence, U.gen++;
+    U.on = 0, U.fence = fence, gen_bump();
     summary();
     if (!RT_KNOB_ON(U.mode - 1)) {
         U.off_subs++;
@@ -265,7 +272,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
 
 void vk_usnap_end(uint64_t fence) {
     if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
-    U.on = 0, U.gen++;
+    U.on = 0, gen_bump();
 }
 
 // First region whose end is above a.
@@ -284,11 +291,11 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     int i = first_above(addr);
     if (i >= U.nreg) return 0;
     const Reg *r = &U.reg[i];
-    if (r->dropped || addr < r->lo || addr + n > r->hi) return 0;
+    if (__atomic_load_n(&r->dropped, __ATOMIC_ACQUIRE) || addr < r->lo || addr + n > r->hi) return 0;
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
-    U.hits++;
+    if (!vk_spec_helper()) U.hits++;   // the replay thread's count; the helper only reads the table
     return 1;
 }
 
@@ -303,10 +310,10 @@ void vk_usnap_drop(uint64_t addr, uint64_t n) {
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
     if (!U.on) return;
     for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
-        if (!U.reg[i].dropped) U.reg[i].dropped = 1, U.drops++, U.gen++;
+        if (!U.reg[i].dropped) __atomic_store_n(&U.reg[i].dropped, 1, __ATOMIC_RELEASE), U.drops++, gen_bump();
 }
 
-uint64_t vk_usnap_gen(void) { return U.gen; }
+uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_ACQUIRE); }
 uint64_t vk_usnap_arena_bytes(void) { return __atomic_load_n(&arena_total, __ATOMIC_RELAXED); }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).

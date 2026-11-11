@@ -164,9 +164,10 @@ static const RsList *rs_list(const VkExec *ex,const VkPipeInfo *info) {
         'static uint32_t attached_as(', 'static void descriptor_state(VkExec *ex) {', 'static void answers_for(',
         'static SubRange sampled_sub(', 'static uint32_t feedback_scan(', 'static void tex_info_lookup(',
         'static void memo_key(', 'static int memo_match(', 'static int bind_sig(')]
-    # These are the exact production replay cases, not a replacement pool setter.
+    # These are the exact production replay cases, not a replacement pool setter. Only the cases that set a pool:
+    # vk_exec.c par_run_op lists both ops on one line among others, which says only that they may join a run.
     cases = '\n'.join(line for line in replay.splitlines()
-                      if line.strip().startswith(('case OP_SET_TEX_POOL:', 'case OP_SET_SAMP_POOL:')))
+                      if line.strip().startswith(('case OP_SET_TEX_POOL:', 'case OP_SET_SAMP_POOL:')) and '->pool' in line)
     selection = 'static void select_pool(VkExec *ex,int op,const p_set_pool *a) {\n switch(op) {\n' + cases + '\n default: abort();\n }\n}\n'
     tests = r'''
 static void select_table(VkExec *ex,int op,dpool_ref pool) {

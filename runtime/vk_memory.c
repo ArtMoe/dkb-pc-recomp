@@ -20,6 +20,7 @@
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "vk.h"
+#include "vk_spec.h"
 #include "platform/platform.h"
 
 // Timestamps for the tracking cost, in ns; qpc_ms converts.
@@ -52,7 +53,8 @@ typedef struct PoolRec {
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
     uint8_t bufbound;                  // ever bound as a vertex, index, uniform, storage or indirect buffer
     uint8_t untracked;                 // the last dirty scan found no write watch over it
-    // VRAM mirror (POOL_IMPORT, "VRAM mirror" below). mstate and mbuf change on the replay thread only.
+    // VRAM mirror (POOL_IMPORT, "VRAM mirror" below). mstate and mbuf change on the replay thread only, once each
+    // (mirror_create); the helper threads read them meanwhile (vk_mem_use), so mstate goes through ms_get and ms_set.
     uint8_t mstate;                    // MS_NONE until the first buffer use, then MS_ON or MS_REFUSED
     VkBuffer mbuf;                     // MS_ON: device-local copy of [import_lo, import_hi), same offsets as buf
     VmaAllocation malloc_;
@@ -67,6 +69,11 @@ typedef struct PoolRec {
     uint32_t sgen;                     // gen_lock: every page write stamped up to this generation is in the shadow
     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
 } PoolRec;
+
+// A pool's mirror state. The replay thread stores it with release order after the mirror's buffer exists, and every
+// reader loads it with acquire order: a helper thread that reads MS_ON in vk_mem_use reads the buffer that goes with it.
+static inline int ms_get(const PoolRec *r) { return __atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE); }
+static inline void ms_set(PoolRec *r, int state) { __atomic_store_n(&r->mstate, (uint8_t)state, __ATOMIC_RELEASE); }
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
 static int shadow_on;                    // shadow mode: imported pools get shadow storage instead (vk_mem_class_log)
@@ -439,7 +446,7 @@ void vk_pool_fini(pool_t *p) {
     int had = pidx_remove(&pool_index, p, &e);
     __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
     PoolRec *r = had ? e.buf : NULL;
-    if (r && r->mstate == MS_ON) mirror_forget(r);
+    if (r && ms_get(r) == MS_ON) mirror_forget(r);
     if (r && r->kind == POOL_PHYS) {
         for (int i = 0; i < nphys; i++)
             if (phys_list[i] == r) { phys_list[i] = phys_list[--nphys]; break; }
@@ -555,7 +562,7 @@ int vk_mem_inspect(uint64_t addr, uint64_t size, VkMemInspect *out) {
         result.cls = rec_class(r);
         _Static_assert(MS_NONE == VK_MEM_INSPECT_MIRROR_NONE && MS_ON == VK_MEM_INSPECT_MIRROR_ON &&
                        MS_REFUSED == VK_MEM_INSPECT_MIRROR_REFUSED, "inspection mirror-state schema");
-        result.mirror_state = r->mstate;
+        result.mirror_state = ms_get(r);
         result.mirror_present = r->mbuf != VK_NULL_HANDLE;
         result.shadow_storage = r->smap != NULL;
     } else if (r->kind == POOL_PHYS) {
@@ -1454,6 +1461,21 @@ static int npend, cpend, nwbl, cwbl;
 static VkBufferCopy *mregions;         // replay: vkCmdCopyBuffer regions
 static int cregions;
 static PlatMutex flush_lock = PLAT_MUTEX_INIT;
+// The replay thread and its helper (vk_spec.h) both reach mirrors for the first time in a submission: a pool's sync and
+// the list of pending copies are theirs one at a time. A pool's acc_sub is stored last, so the thread that reads it
+// without the lock (vk_mem_use) sees a pool as synced only once its copies are queued.
+static PlatMutex mirror_lock = PLAT_MUTEX_INIT;
+// Takes mirror_lock only while helper threads exist, so with TOTK_REPLAY_PAR=0 (the default) the replay thread works
+// the mirrors alone and takes no lock, as before the helpers. Returns whether it took the lock, for mirror_unlock:
+// vk_spec_count is set once, by the replay thread, so a caller reads it once and pairs the two on that reading.
+static int mirror_lock_if_shared(void) {
+    if (!vk_spec_count()) return 0;
+    plat_mutex_lock(&mirror_lock);
+    return 1;
+}
+static void mirror_unlock(int locked) {
+    if (locked) plat_mutex_unlock(&mirror_lock);
+}
 
 typedef struct {
     uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
@@ -1552,7 +1574,7 @@ static void mbarrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags
 }
 
 static void refuse(PoolRec *r, int why, const char *what) {
-    r->mstate = MS_REFUSED;
+    ms_set(r, MS_REFUSED);
     uint64_t n = r->import_hi - r->import_lo;
     if (plat_inc64(&m_refused_n[why]) <= 4) {
         char f[160];
@@ -1567,16 +1589,17 @@ static void refuse(PoolRec *r, int why, const char *what) {
 static void mirror_create(PoolRec *r) {
     VkCtx *c = vk_ctx();
     uint64_t n = r->import_hi - r->import_lo;
-    r->mstate = MS_REFUSED;
+    // The state is stored once, when it is final. A helper thread that reads it before that (vk_mem_use) sees MS_NONE
+    // and gives its part up; it never sees a refusal that turns into a mirror.
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
-    if (r->kind != POOL_IMPORT || !r->buf || !n) return;
+    if (r->kind != POOL_IMPORT || !r->buf || !n) return ms_set(r, MS_REFUSED);
     plat_mutex_lock_shared(&pool_lock);
     int i = pidx_upper(&pool_index, r->lo) - 1;
     while (i >= 0 && pool_index.e[i].buf != r) i--;
     int alone = i >= 0 && (i == 0 || pool_index.maxhi[i - 1] <= pool_index.e[i].lo) &&
                 (i + 1 == pool_index.n || pool_index.e[i + 1].lo >= pool_index.e[i].hi);
     plat_mutex_unlock_shared(&pool_lock);
-    if (i < 0) return;   // finalized meanwhile
+    if (i < 0) return ms_set(r, MS_REFUSED);   // finalized meanwhile
     if (!alone) return refuse(r, MR_OVERLAP, "it overlaps another pool");
     uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
     if (r1 >= SNAP_REGIONS) return refuse(r, MR_UNTRACKED, "outside the write-watched address space");
@@ -1615,7 +1638,7 @@ static void mirror_create(PoolRec *r) {
     nm++;
     plat_mutex_unlock(&pool_lock);
     r->acc_sub = msub;
-    r->mstate = MS_ON;
+    ms_set(r, MS_ON);   // after mbuf and acc_sub: what a reader of MS_ON goes on to read
     range_add(&pend, &npend, &cpend, r, 0, n);
     mrep.first_n++, mrep.first_bytes += n;
     plat_inc64(&m_live_n);
@@ -1656,8 +1679,12 @@ static void mirror_retire(void *arg) {
 
 // Replay thread, the first access of this submission: queues the copies of the pages written since the last sync.
 static void mirror_sync(PoolRec *r) {
+    int locked = mirror_lock_if_shared();
+    if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) == msub) {   // the other thread did it meanwhile
+        mirror_unlock(locked);
+        return;
+    }
     uint64_t t0 = qpc();
-    r->acc_sub = msub;
     uint64_t lo = r->import_lo, hi = r->import_hi;
     uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
     int excl = 0;
@@ -1695,34 +1722,49 @@ static void mirror_sync(PoolRec *r) {
     }
     mrep.syncs++;
     mrep.sync_t += qpc() - t0;
+    __atomic_store_n(&r->acc_sub, msub, __ATOMIC_RELEASE);
+    mirror_unlock(locked);
 }
 
 void vk_mem_use(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
-    if (r->mstate == MS_NONE) mirror_create(r);
-    if (r->mstate != MS_ON) return;
-    if (r->acc_sub != msub) mirror_sync(r);
+    int state = ms_get(r);
+    if (state == MS_NONE) {
+        // A new mirror changes what every later bind of the pool resolves to: the helper leaves it to the replay
+        // thread, and a part that ran while one was made is dropped (vk_mem_mirror_gen).
+        if (vk_spec_helper()) { vk_spec_fail(VK_SPEC_MIRROR); return; }
+        int locked = mirror_lock_if_shared();
+        mirror_create(r);
+        mirror_unlock(locked);
+        state = ms_get(r);
+    }
+    if (state != MS_ON) return;
+    if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
 }
 
 void vk_mem_pick(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
-    if (!r || r->mstate != MS_ON) return;
-    if (r->acc_sub != msub) mirror_sync(r);
+    if (!r || ms_get(r) != MS_ON) return;
+    if (__atomic_load_n(&r->acc_sub, __ATOMIC_ACQUIRE) != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
 }
+
+uint64_t vk_mem_mirror_gen(void) { return __atomic_load_n(&mirror_gen, __ATOMIC_ACQUIRE); }
+int vk_mem_shadow_on(void) { return shadow_on; }
 
 int vk_mem_mirror_probe(uint64_t addr) {
     VkMemSpan sp;
     if (!vk_mirror_on || !vk_mem_resolve(addr, 1, &sp) || !sp.pool) return 0;
     mepoch = vk_texture_epoch();
     vk_mem_use(&sp);
-    return ((PoolRec *)sp.pool)->mstate == MS_ON;
+    return ms_get(sp.pool) == MS_ON;
 }
 
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
+    vk_spec_event();   // a bind the GPU writes through: never the helper thread's
     PoolRec *r = sp->pool;
-    if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
+    if (!r || ms_get(r) != MS_ON || sp->buffer != r->mbuf || !size) return;
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
 }
 
@@ -1733,7 +1775,7 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
     plat_mutex_lock_shared(&pool_lock);
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)p->mem, 0);
     PoolRec *r = e && e->key == p ? e->buf : NULL;
-    if (r && r->mstate == MS_ON) {
+    if (r && ms_get(r) == MS_ON) {
         uint64_t a = (uintptr_t)p->mem + off, b = a + size;
         plat_mutex_lock(&flush_lock);
         if (!r->fl_hi) r->fl_lo = a, r->fl_hi = b;
@@ -1802,14 +1844,17 @@ void vk_mem_mirror_begin(void) {
 int vk_mem_mirror_pending(void) { return npend; }
 
 void vk_mem_mirror_prologue(VkCommandBuffer cb) {
-    if (!npend) return;
-    mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-             VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
-    mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-             VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-    npend = 0;
-    mrep.prologues++;
+    int locked = mirror_lock_if_shared();   // a helper may be queueing a sync
+    if (npend) {
+        mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                 VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
+        mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        npend = 0;
+        mrep.prologues++;
+    }
+    mirror_unlock(locked);
 }
 
 // ---- verify mode
@@ -2265,6 +2310,7 @@ uint64_t vk_upload_flush(int wait) {
         vkEndCommandBuffer(open_b.cb);
         plat_inc64(&up_batches);
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &open_b.cb};
+        rec_submit_wait();   // a replay part the recorder thread is still submitting precedes this batch (vk_rec.c rec_submit)
         vk_queue_lock();
         VkResult r = vkQueueSubmit(c->gfx_queue, 1, &si, open_b.fence);
         vk_queue_unlock();
