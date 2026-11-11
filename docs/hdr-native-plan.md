@@ -166,7 +166,7 @@ highlights at the tunnel's end, so brighter scenes still need a look.
 ## Route B in the runtime
 
 The edited shader cannot go into the repository (it is decompiled from the game), so `spirv_hdr_shoulder.c` makes the
-same change to the game's own SPIR-V when the module is created (`vk_pipeline.c` `hdr_shoulder`, before the NaN guard),
+same change to the game's own SPIR-V when the module is created (`gfx_spirv.c` `hdr_shoulder`, before the NaN guard),
 whenever `hdr_native = 1`; the diagnostic `DKB_HDR_SHOULDER=0` keeps the game's curve (a user setting for that, `hdr_range = console`, was dropped: nobody would choose the 1.36x ceiling).
 
 - It finds the composite by structure: three colour output components stored as `FMin(FMax(0, FMul(x, Load Y)),
