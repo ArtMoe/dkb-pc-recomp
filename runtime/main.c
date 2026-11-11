@@ -447,6 +447,7 @@ static int selftest(void) {
     float used, total, proc;
     plat_mem_info(&used, &total, &proc);
     if (proc >= 0) printf("process: working set %.0f MiB\n", proc);
+    mem_commit_report("selftest");
     printf("selftest: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;
 }

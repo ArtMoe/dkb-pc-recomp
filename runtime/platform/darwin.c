@@ -1536,6 +1536,9 @@ void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb) {
     if (resident) *proc_mb = (float)(resident >> 20);
 }
 
+// No walk of the address space on this host: mem_commit_report then sums nothing.
+void plat_mem_walk(void (*fn)(uint64_t, uint64_t, int, void *), void *arg) { (void)fn, (void)arg; }
+
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {
     *resident = *private_bytes = 0;
     mach_task_basic_info_data_t bi;

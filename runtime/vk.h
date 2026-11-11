@@ -288,6 +288,7 @@ void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 const void *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy's bytes for the CPU; NULL: not copied or dropped
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+uint64_t vk_usnap_arena_bytes(void);                 // arenas created so far (all kept until shutdown)
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);
@@ -379,6 +380,7 @@ void vk_mem_protect_until(uint64_t timeline_value);
 void vk_mem_collect(void);                         // frees what has completed
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
+void vk_mem_gpu_summary(char *out, size_t n);      // "; gpu: ..." for mem_commit_report: VMA, mirrors, staging, usnap
 void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
 
 // Textures. Images are keyed by storage GPU address plus descriptor and stay in VK_IMAGE_LAYOUT_GENERAL. A mirrored

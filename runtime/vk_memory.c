@@ -746,6 +746,13 @@ static void vram_log(uint64_t frame);
 
 void vk_mem_census(uint64_t frame) {
     static uint64_t window_start;
+    static int report_every = -1;   // TOTK_MEM_REPORT, read on the first present
+    if (report_every < 0) report_every = cfg_int("TOTK_MEM_REPORT");
+    if (report_every > 0 && frame % (uint64_t)report_every == 0) {
+        char when[32];
+        snprintf(when, sizeof when, "frame %llu", (unsigned long long)frame);
+        mem_commit_report(when);
+    }
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
@@ -2350,6 +2357,29 @@ void vk_mem_stats(VkMemStats *s) {
     plat_mutex_unlock_shared(&pool_lock);
     s->import_failures = (uint64_t)n_import_failures;
     s->upload_batches = next_seq;
+}
+
+// Fills out with the GPU-side numbers that explain the "other private" bucket of mem_commit_report (memory.c). The
+// VMA heap numbers are the device-local heaps, as vram_log counts them; on an integrated GPU they are system memory.
+void vk_mem_gpu_summary(char *out, size_t n) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->vma) {
+        if (n) *out = 0;
+        return;
+    }
+    VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(c->vma, vb);
+    uint64_t dev = 0;
+    for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+        if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) dev += vb[h].statistics.blockBytes;
+    uint64_t stg = 0;
+    if (__atomic_load_n(&stg_pool_tried, __ATOMIC_ACQUIRE) && stg_pool) {
+        VmaStatistics ps;
+        vmaGetPoolStatistics(c->vma, stg_pool, &ps);
+        stg = ps.blockBytes;
+    }
+    snprintf(out, n, "; gpu: device-local %.0f MiB, mirrors %.0f MiB, staging pool %.0f MiB, usnap arenas %.0f MiB",
+             dev / 1048576.0, m_live_bytes / 1048576.0, stg / 1048576.0, vk_usnap_arena_bytes() / 1048576.0);
 }
 
 void vk_mem_shutdown(void) {
