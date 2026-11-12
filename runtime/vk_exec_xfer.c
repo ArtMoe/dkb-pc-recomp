@@ -233,6 +233,8 @@ void vk_exec_oq_pass_ended(VkExec *ex) {
 }
 
 int vk_exec_oq_counting(void) { return oq_counting; }
+// Whether a sliced pass can run now: draws are not counted, or the device inherits queries into secondary buffers.
+int vk_exec_oq_sliceable(void) { return !oq_counting || oq_inherit; }
 
 void vk_exec_xfer_shutdown(void) {
     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);

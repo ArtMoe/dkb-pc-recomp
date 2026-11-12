@@ -225,6 +225,7 @@ WEAK void vk_exec_draw_slices_begin(int threads) { (void)threads; }
 WEAK struct DrawCtx *vk_exec_draw_slice_ctx(int k) { return (void)k, NULL; }
 WEAK void vk_exec_draw_slices_end(int threads) { (void)threads; }
 WEAK int vk_exec_oq_counting(void) { return 0; }
+WEAK int vk_exec_oq_sliceable(void) { return 1; }
 WEAK int vk_exec_oq_begin_outside(VkExec *ex, VkQueryControlFlags *flags, int *open) { return (void)ex, (void)flags, *open = 0, 0; }
 WEAK void vk_exec_oq_pass_ended(VkExec *ex) { (void)ex; }
 
@@ -1874,6 +1875,8 @@ static int par_start(VkExec *ex) {
     if (e->draws < PAR_MIN_DRAWS) return pass_why = PAR_WHY_SMALL, par_no[0]++, 0;
     if (e->banned >= PAR_BAN_AFTER) return pass_why = PAR_WHY_BANNED, par_no[1]++, 0;
     if (ex->pass_noatt) return pass_why = PAR_WHY_NOATT, par_no[2]++, 0;
+    // Before the restart below: a device that cannot inherit queries must not lose the open pass for nothing.
+    if (!vk_exec_oq_sliceable()) return pass_why = PAR_WHY_QUERY, pass_tried = 1, par_skipped_oq++, 0;
     if (ex->in_pass) {
         par_restart = 1;
         vk_exec_pass_end(ex);
