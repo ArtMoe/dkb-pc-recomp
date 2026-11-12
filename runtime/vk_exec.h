@@ -3,9 +3,9 @@
 // (vk_exec_draw.c) and copies, counters, events and conditional rendering (vk_exec_xfer.c) plug in through the two
 // hooks at the bottom.
 // Runs on the submitting thread under vk_sync_submit's lock: no locking inside. The only other threads that walk ops
-// are the helpers (vk_spec.h): each translates a part of a long run of draws with a VkExec and a draw translator of
-// its own (vk_exec_draw2.c and its siblings), reads the shared tables without changing them and gives its part up
-// where it would have to.
+// are the helpers (vk_spec.h): each translates a part of a long run of draws with a VkExec of its own and the helpers'
+// copy of the draw translator (vk_exec_draw_helper.c) with a draw context of its own, reads the shared tables without
+// changing them and gives its part up where it would have to.
 // The op loop follows MacNativeGames nvn_mtl.m (MIT, Copyright (c) 2026 jhaizhou) and the pass handling LAS Recomp
 // (MIT, Copyright (c) 2026 Peiikai); vk_exec.c names the sources.
 #pragma once
@@ -112,6 +112,9 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+    // The draw context of the thread recording into this VkExec (vk_exec_draw.c DrawCtx): the replay thread's for X,
+    // helper k's for its part's copy. Last, so the part copies and compares of vk_exec.c (par_join, par_same) skip it.
+    struct DrawCtx *draw;
 } VkExec;
 
 typedef void (*VkExecWorkFn)(VkExec *ex, void *context);
@@ -139,8 +142,8 @@ VkCommandBuffer vk_exec_inline_begin(int *reopen);
 int vk_exec_read_buffer(VkExec *ex, uint64_t addr, uint64_t size, void *out);
 void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
-// buffers): the replay continues in a new one (vk_sync_split).
-void vk_exec_draw_new_cb(void);
+// buffers) in ex's draw context: the replay continues in a new one (vk_sync_split).
+void vk_exec_draw_new_cb(VkExec *ex);
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);
 // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
 void vk_exec_bc_gone(VkImage image);
@@ -175,7 +178,7 @@ extern VkExecFrame vk_exec_frame;
 // buffers of the storage buffers, the pipeline with its layout and dynamic state, the vertex and index buffers, the
 // commands recorded.
 // _begin starts the list, _draw closes a draw's entry (called before the next draw), _end closes the last and returns
-// the list. Each helper thread's translator has its own (VkExecHelper below).
+// the list. Each draw context has its own: the list of ex->draw.
 #define VK_EXEC_DIG_W 11
 void vk_exec_draw_digest_begin(const VkExec *ex);
 void vk_exec_draw_digest_draw(const VkExec *ex);
@@ -222,28 +225,22 @@ void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
 int vk_exec_oq_idle(void);   // no draw is being counted: a helper part records no query
 
-// ---- the helper threads' translators (vk_spec.h; vk_exec_draw2.c to vk_exec_draw6.c: vk_exec_draw.c compiled once
-// more for each helper)
-// The replay thread's translator serves what exists once: the stand-in images and the views of registered textures.
-// A helper makes no stand-in (it gets copies of the handles, and vk_exec_draw_storage_standin with create 0 only looks
-// one up), but vk_exec_draw_view creates a view that is missing, in the one cache and under the texture lock, as the
-// replay thread would at the same draw.
+// ---- the helper threads' draws (vk_spec.h)
+// A helper thread runs vk_exec_op_draw and the vk_exec_draw_digest_* calls like the replay thread, on a VkExec whose
+// draw context is its own (VkExec.draw; vk_exec_draw.c, the end of the file); these entry points pass such a VkExec
+// on to the helpers' copy of the translator (vk_exec_draw_helper.c). What exists once is the replay thread's: a
+// helper makes no stand-in (vk_exec_draw_storage_standin with create 0 only looks one up), but a view of a registered
+// texture that is missing is created in the one cache, under the texture lock, as the replay thread would at the same
+// draw.
 VkImageView vk_exec_draw_storage_standin(int di, VkFormat fmt, int create);
-int vk_exec_draw_standins(void *out, size_t bytes);
-VkImageView vk_exec_draw_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage);
-void vk_exec_draw_updates(void *out, size_t bytes);
 // Forgets every shortcut that assumes the VkExec the translator saw last: the replay goes on from another one (the
-// helper's state at a join, the replay thread's at a launch). Includes vk_exec_draw_new_cb.
-void vk_exec_draw_rebase(void);
-// One helper's translator, as its copy of vk_exec_draw.c exports it.
-typedef struct {
-    int (*begin)(void);   // replay thread, the helper idle: readies the translator for a part; 0: no part now
-    void (*op)(VkExec *ex, uint32_t op, const void *payload);   // vk_exec_op_draw on the helper thread
-    void (*digest_begin)(const VkExec *ex);   // vk_exec_draw_digest_* of this translator
-    void (*digest_draw)(const VkExec *ex);
-    uint32_t (*digest_end)(const VkExec *ex, const uint64_t **d);
-    void (*shutdown)(void);   // vk_exec_draw_shutdown, the helper idle: releases what this translator kept
-    VkExecFrame *frame;   // the helper's counters of its part: added to vk_exec_frame when it is taken
-} VkExecHelper;
-extern const VkExecHelper vk_exec_draw2_helper, vk_exec_draw3_helper, vk_exec_draw4_helper, vk_exec_draw5_helper,
-    vk_exec_draw6_helper;
+// helper's state at a join, the replay thread's at a launch), in ex's draw context. Includes vk_exec_draw_new_cb.
+void vk_exec_draw_rebase(VkExec *ex);
+// The replay thread's draw context, which VkExec.draw of its state points at.
+struct DrawCtx *vk_exec_draw_main(void);
+// Replay thread, helper k idle: readies helper k's draw context for a part (made the first time; it takes the inline
+// uniform updates noted so far) and returns it, for the VkExec.draw of the helper's copy. NULL: no part now (no
+// stand-ins yet).
+struct DrawCtx *vk_exec_draw_helper_begin(int k);
+// Helper k's counters of its part (its context's), added to vk_exec_frame when the part is taken.
+VkExecFrame *vk_exec_draw_helper_frame(int k);

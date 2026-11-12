@@ -22,8 +22,8 @@
 //
 // A helper does create and write a few things. Each is what the replay thread would have made at the same draw, each
 // is made under the lock its owner already takes, and none has to be undone when the part is dropped:
-// - image views of registered textures, in the one cache of the replay thread's translator (vk_exec_draw.c get_view
-//   through vk_exec_draw_view, and vk_exec_target_view; texture lock), kept for the image's lifetime;
+// - image views of registered textures, in the one cache every thread's draws use (vk_exec_draw.c get_view and
+//   vk_exec_target_view; texture lock), kept for the image's lifetime;
 // - views of targets that are not registered textures, in the list of the helper's own VkExec (vk_exec.c view_of),
 //   released at the submission's fence whether the part is taken or not (vk_exec.c par_join and par_close);
 // - a shader or pipeline that is not built yet: its lookup enters it and queues the build as the replay thread's
@@ -57,7 +57,7 @@ enum {
     VK_SPEC_N
 };
 
-#define VK_SPEC_HELPERS 5                              // helper threads at most: vk_exec.c has a translator for each
+#define VK_SPEC_HELPERS 5                              // helper threads at most: vk_exec_draw.c has a draw context for each
 
 extern _Thread_local int vk_spec_here;                 // on a helper thread 1 + its number, 0 on every other thread
 static inline int vk_spec_helper(void) { return vk_spec_here; }

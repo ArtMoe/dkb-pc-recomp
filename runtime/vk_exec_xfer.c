@@ -471,7 +471,7 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
             warn_once(W_FORMAT, "ASTC compute copy of format %#x texture failed to record: skipped", p->tex->d.format);
             return;
         }
-        vk_exec_draw_new_cb();
+        vk_exec_draw_new_cb(ex);
         ex->dirty = VK_EXEC_DIRTY_ALL;
         vk_exec_barrier(ex);
     } else if (to_image && (s.f.vk != s.f.ideal || s.f.expand_rgb || s.f.astc_bw)) {
