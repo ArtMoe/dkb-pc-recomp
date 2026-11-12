@@ -144,6 +144,16 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers) in ex's draw context: the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(VkExec *ex);
+// Parallel passes (vk_exec.c par_start): vk_exec_par_hazard, on a thread recording a slice, marks that the slice
+// needed something only the primary may do (the call is then dropped and the pass's targets are not sliced again).
+void vk_exec_par_hazard(void);
+// As vk_exec_par_hazard for a draw whose effect depends on the order of draws across slices (a storage buffer write):
+// the pass's targets are not sliced again from the next pass on.
+void vk_exec_par_order_hazard(void);
+// vk_exec_xfer.c: 1 while occlusion queries count draws (a sliced pass is not started then).
+int vk_exec_oq_counting(void);
+int vk_exec_oq_begin_outside(VkExec *ex, VkQueryControlFlags *flags, int *open);   // vk_exec_xfer.c, sliced passes
+void vk_exec_oq_pass_ended(VkExec *ex);
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);
 // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
 void vk_exec_bc_gone(VkImage image);
@@ -244,3 +254,13 @@ struct DrawCtx *vk_exec_draw_main(void);
 struct DrawCtx *vk_exec_draw_helper_begin(int k);
 // Helper k's counters of its part (its context's), added to vk_exec_frame when the part is taken.
 VkExecFrame *vk_exec_draw_helper_frame(int k);
+
+// ---- the threads that record slices of parallel passes (vk_exec.c par_record)
+// Recording thread k (0 the submitting thread, 1 and up the workers) replays its slices into a VkExec whose draw context
+// is vk_exec_draw_slice_ctx(k), so they run the helpers' copy of the translator. _begin, on the submitting thread at a
+// sliced pass's start while no slice is recorded, makes the contexts of threads 0 to threads-1 and gives them the
+// inline uniform updates noted so far; _end, once every slice of the pass is recorded, adds their frame counters to
+// vk_exec_frame.
+void vk_exec_draw_slices_begin(int threads);
+struct DrawCtx *vk_exec_draw_slice_ctx(int k);
+void vk_exec_draw_slices_end(int threads);

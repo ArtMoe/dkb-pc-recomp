@@ -27,7 +27,8 @@ def draw_context(source):
 
     The functions reach the draw state as dc->X with dc = DC_OF(ex), so a fixture defines a DrawCtx, points its
     VkExec at it and sets the members its cases need. A fixture that defines a bound itself keeps its own. DC_OF,
-    IS_HELPER and ON_HELPER are those of a translator that takes its context from VkExec.draw and is not a helper's;
+    IS_HELPER, IN_SLICE and ON_HELPER are those of a translator that takes its context from VkExec.draw and is not a
+    helper's nor a slice thread's;
     the entry points' hand-over to the helpers' copy (vk_exec_draw_h_*) is declared and never taken.
     """
     bounds = []
@@ -37,7 +38,8 @@ def draw_context(source):
     res = source[source.index('typedef struct { VkBuffer buf; VmaAllocation alloc;'):
                  source.index('} CbRes;') + len('} CbRes;')]
     ctx = source[source.index('// ---- the draw context'):source.index('} DrawCtx;') + len('} DrawCtx;')]
-    copy = ['#define DC_OF(ex) ((ex)->draw)', '#define IS_HELPER(dc) ((void)(dc), 0)', '#define ON_HELPER(ex) 0',
+    copy = ['#define DC_OF(ex) ((ex)->draw)', '#define IS_HELPER(dc) ((void)(dc), 0)', '#define IN_SLICE(dc) ((void)(dc), 0)',
+            '#define ON_HELPER(ex) 0',
             '#include "vk_exec_draw_helper.h"']
     return '\n'.join(bounds + [res, ctx] + copy) + '\n'
 
