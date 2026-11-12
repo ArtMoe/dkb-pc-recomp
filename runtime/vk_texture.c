@@ -27,6 +27,7 @@
 #include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_spec.h"
 #include "platform/platform.h"
 
 typedef struct {
@@ -636,6 +637,7 @@ static void upload(Tex *e) {
     const nvn_texdesc *d = &t->d;
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
     if (!bpb || !t->mem) return;
+    vk_spec_event();   // the helper thread uploads nothing
     uint64_t p0 = perf_begin(), u0 = kern_now_ns();
     int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D, one_d = e->pub.type == VK_IMAGE_TYPE_1D;
     uint32_t levels = linear ? 1 : e->pub.levels, layers = linear ? 1 : e->pub.layers;
@@ -820,6 +822,7 @@ static int untracked_same(Tex *e, int ch) {
 // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
 static void make_fresh(Tex *e) {
     if (!e->pub.mirrored || e->pub.gpu_owned) return;
+    if (vk_spec_helper()) { vk_spec_fail(VK_SPEC_TARGET); return; }   // the check and its upload are the replay thread's
     uint64_t size = e->t.L.size;
     if (!e->uploaded) {
         int ch = vk_mem_changed(e->pub.addr, size, 0, &e->wgen);   // resets the write bits before the storage is read
@@ -837,15 +840,21 @@ static void make_fresh(Tex *e) {
 // make_fresh for draw bindings: the page check answers from this submission's write-watch snapshot (vk_memory.c
 // vk_mem_changed_snap) instead of a system call per texture. A write the snapshot of the texture's region missed (made
 // after it, during this replay) keeps its write-watch bit and is caught by the next submission's snapshot.
-static void make_fresh_snap(Tex *e) {
-    if (!e->pub.mirrored || e->pub.gpu_owned) return;
+// 0: the helper thread (vk_spec.h) met a texture that needs an upload and left the entry as it was, for the replay
+// thread to check again; an unchanged texture it checks as the replay thread would.
+static int make_fresh_snap(Tex *e) {
+    if (!e->pub.mirrored || e->pub.gpu_owned) return 1;
+    int helper = vk_spec_helper();
+    if (helper && !e->uploaded) return vk_spec_fail(VK_SPEC_UPLOAD), 0;
     uint32_t now;
     n_checks++;
     int ch = vk_mem_changed_snap(e->pub.addr, e->t.L.size, e->uploaded ? e->wgen : 0, submit_epoch, &now);
+    if (helper && ch) return vk_spec_fail(VK_SPEC_UPLOAD), 0;
     e->wgen = now;
-    if (!e->uploaded) { untracked_same(e, ch); upload(e); return; }
+    if (!e->uploaded) { untracked_same(e, ch); upload(e); return 1; }
     e->last_ch = ch;
     if (ch && !untracked_same(e, ch)) upload(e);
+    return 1;
 }
 
 // ---------------------------------------------------------------- aliases (TOTK_TEX_ALIAS)
@@ -931,6 +940,12 @@ static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
+    if (vk_spec_helper()) {
+        // The helper thread only reads: an entry to create, to take back into use or to describe anew is the replay
+        // thread's to change, at its own position in the submission.
+        if (!e || e->released || memcmp(&e->t, t, sizeof *t)) return vk_spec_fail(VK_SPEC_TEXTURE), NULL;
+        return e;
+    }
     if (!e) {
         if (tex_alias < 0) {
             tex_alias = cfg_bool("TOTK_TEX_ALIAS");
@@ -972,9 +987,10 @@ static Tex *entry_of(const tex_t *t) {
         nvn_hm_put(&by_addr, &k.addr, e);
         nvn_hm_put(&by_key, &k, e);
         tex_gen_bump(k.addr);
+        vk_spec_world_changed();
     }
-    if (e->released) e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr);
-    e->t = *t;
+    if (e->released) e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr), vk_spec_world_changed();
+    if (memcmp(&e->t, t, sizeof *t)) vk_spec_event(), e->t = *t;   // described anew: the helper leaves that to this thread
     return e;
 }
 
@@ -1017,6 +1033,35 @@ static void wb_cfg_init(void) {
     if (wb_limit != WB_SMALL_DEFAULT) rt_log("vk: fence write-back limit %llu bytes", (unsigned long long)wb_limit);
 }
 
+// The helper thread (vk_spec.h) ended a pass or cleared a target: 1 when marking t GPU-written changes nothing a part
+// in flight could have read (the entry exists, is in use and the GPU owns it already), so the replay thread can do the
+// marking later, when it takes the part (vk_texture_gpu_written_late).
+int vk_texture_gpu_written_ready(const tex_t *t) {
+    if (!t || !t->mem) return 1;
+    TexKey k;
+    make_key(t, &k);
+    lock();
+    const Tex *e = nvn_hm_get(&by_key, &k);
+    int ok = e && !e->released && e->pub.gpu_owned;
+    unlock();
+    return ok;
+}
+
+static void gpu_written_entry(Tex *e);
+
+// vk_texture_gpu_written for a write a helper part made. An entry that went meanwhile is left alone: making a new one
+// here would upload its storage after the part that rendered into it.
+void vk_texture_gpu_written_late(const tex_t *t) {
+    if (!t || !t->mem) return;
+    vk_exec_frame_written(t);
+    TexKey k;
+    make_key(t, &k);
+    lock();
+    Tex *e = nvn_hm_get(&by_key, &k);
+    if (e && !e->released && e->pub.gpu_owned) gpu_written_entry(e);
+    unlock();
+}
+
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
@@ -1024,6 +1069,14 @@ void vk_texture_gpu_written(const tex_t *t) {
     Tex *e = entry_of(t);
     if (e) {
         make_fresh(e);   // a partial render keeps what the storage held before
+        gpu_written_entry(e);
+    }
+    unlock();
+}
+
+static void gpu_written_entry(Tex *e) {
+    {
+        if (!e->pub.gpu_owned) vk_spec_world_changed();   // a helper part may have checked or uploaded it as CPU-owned
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
@@ -1041,7 +1094,6 @@ void vk_texture_gpu_written(const tex_t *t) {
             own_add(e);
         }
     }
-    unlock();
 }
 
 void vk_texture_release(const tex_t *t) {
@@ -1211,7 +1263,7 @@ const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool, int id, view_t 
     // mirrored, GPU-owned or no CPU layout), so a slot that checked its entry in this submit has nothing left to do.
     if (e && s->cepoch != submit_epoch) {
         if (!e->uploaded || e->checked != submit_epoch) {
-            make_fresh_snap(e);
+            if (!make_fresh_snap(e)) return NULL;   // the helper gave up: the replay thread checks the entry itself
             e->checked = submit_epoch;
         }
         s->cepoch = submit_epoch;

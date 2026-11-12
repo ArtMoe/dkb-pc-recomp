@@ -29,6 +29,7 @@
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_spec.h"
 #include "platform/platform.h"
 
 #define WEAK __attribute__((weak))
@@ -679,6 +680,7 @@ void vk_backend_shutdown(void) {
     gfx_exit_log();
     vk_present_drain();
     vk_sync_shutdown();
+    vk_spec_shutdown();   // after the last submission is done: its parts may be the helper thread's command buffers
     vk_mem_shutdown();
     vk_shutdown();
 }

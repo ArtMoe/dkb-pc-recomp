@@ -5,7 +5,9 @@
 // the window, probes) are made at once. A call the ring has no packet for (a structure with a pNext chain) waits for
 // the recorder to empty the ring and is then made at once on the calling thread. rec_end returns once the recorder made
 // every call. vk_sync.c ends a part through rec_end_cb: the recorder makes the last calls into a part it recorded,
-// vkEndCommandBuffer included; submitting and the command pool stay on the submitting thread.
+// vkEndCommandBuffer included. A part that is not the submission's last is also submitted by the recorder (rec_submit),
+// in queue order, while the submitting thread records the next one; the last part's submit, which signals the
+// submission's value, and the command pool stay on the submitting thread.
 //
 // Every vkCmd* the runtime calls through vk.h goes through the rc_* wrappers below (the macros at the end); the
 // extension commands called through function pointers have rec_* wrappers of their own. TOTK_VK_RECORDER=0 makes every
@@ -25,6 +27,12 @@ void rec_end(void);                   // waits for the recorder; no-op when rec_
 // when it records cb, and the wait for it (1); otherwise rec_end and the breadcrumb, and the caller ends cb (0).
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
+// A part the recorder ended (rec_end_cb returned 1) that is not the submission's last: with TOTK_REC_SUBMIT=1 the
+// recorder submits pro (the part's mirror prologue, VK_NULL_HANDLE for none) and cb in queue order after its calls,
+// without a wait (1); 0 when the caller has to submit (no recorder, or TOTK_REC_SUBMIT at its default of 0). fence:
+// the submission's value, for the failure message.
+int rec_submit(VkCommandBuffer pro, VkCommandBuffer cb, uint64_t fence);
+void rec_submit_wait(void);           // any thread: returns once every part queued by rec_submit so far is submitted
 void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
 
 // Extension commands called through device function pointers.

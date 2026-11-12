@@ -23,6 +23,7 @@ def source():
 #define ZERO_BYTES 65536u
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
+#define NVN_STAGE_GS 2
 #define NVN_STAGE_CS 5
 enum { W_SSBO_ALIGN, W_SSBO_SLOT };
 static const Nvn2C0Layout *c0_lay;
@@ -94,6 +95,8 @@ int vk_mem_resolve(uint64_t addr, uint64_t n, VkMemSpan *span) {
     pieces += [updates, function(draw, 'static void upd_note('), function(draw, 'static int upd_read('),
                function(draw, 'static uint64_t ubo_ptr('),
                '#define find_stage find_stage_scan\n',
+               # bind_range asks for a stage origin only when vk_sync_noting(), which is 0 in this fixture
+               '#define find_stage_origin(p, st, ctl, code, len, o) (find_stage_scan(p, st, ctl, code, len) && (*(o) = 0, 1))\n',
                function(draw, 'static p_bind_buf guarded_storage_binding('),
                function(draw, 'static VkDescriptorBufferInfo ssbo_info(')]
     after = r'''

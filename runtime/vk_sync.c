@@ -411,9 +411,13 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // submitted right before the part that needs them and timed like a part; VK_NULL_HANDLE when there are none. After the
 // part was recorded, sub_lock held; may move slots[].
 // First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
+// cmd_pool is externally synchronised and the recorder thread may be using it: with TOTK_REC_BEGIN=1, part_begin queues
+// the next part's vkBeginCommandBuffer into the ring, and vk_sync_split_insert comes after that. The ring is drained
+// before the pool is touched here (a no-op after rec_end_cb, which drains it already).
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
     if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
+    rec_drain();
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -435,16 +439,22 @@ static VkCommandBuffer split_impl(int wait) {
     }
     VkCommandBuffer cb = slots[cur_slot].cb;
     ts_end(cb, cur_fence);
-    if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);   // every command of the part is in cb, ended by its recorder
+    int by_rec = rec_end_cb(cb, 0, 0);   // every command of the part is in cb, ended by its recorder
+    if (!by_rec) vkEndCommandBuffer(cb);
     vk_upload_flush(0);   // the uploads this part asked for precede it in queue order
     VkCommandBuffer pro = prologue(c, cur_fence);
     VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
-    vk_queue_lock();
-    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, prefix);
-    vk_queue_unlock();
+    // The recorder submits a part it ended while the replay goes on (rec_submit). A part that is waited for below, or
+    // that the recorder did not end, is submitted here.
+    VkResult r = VK_SUCCESS;
+    if (wait || !by_rec || !rec_submit(pro, cb, cur_fence)) {
+        vk_queue_lock();
+        r = vkQueueSubmit2(c->gfx_queue, 1, &si, prefix);
+        vk_queue_unlock();
+    }
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
@@ -468,6 +478,31 @@ static VkCommandBuffer split_impl(int wait) {
 }
 
 VkCommandBuffer vk_sync_split(void) { return split_impl(0); }
+
+// A part recorded by the helper thread (vk_spec.h) goes into the queue between two of the replay thread's: the caller
+// has just split, so the part before is ended and on its way, and nothing of the part after is recorded yet. The ring
+// may still hold that part's submit and, with TOTK_REC_BEGIN=1, the next part's begin, so prologue drains it before it
+// records the mirror copies from the same command pool.
+// The recorder submits it in ring order, behind that part; without the recorder it is submitted here, once the
+// recorder's own submits are through. Not timed (ts_open): the perf trace's GPU figure leaves a helper part out.
+void vk_sync_split_insert(VkCommandBuffer cb) {
+    VkCtx *c = vk_ctx();
+    vk_upload_flush(0);
+    VkCommandBuffer pro = prologue(c, cur_fence);   // the mirrors the helper was first to use in this submission
+    if (rec_submit(pro, cb, cur_fence)) return;
+    rec_submit_wait();
+    VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
+                                        {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
+                        .pCommandBufferInfos = pro ? cbi : cbi + 1};
+    vk_queue_lock();
+    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock();
+    if (r != VK_SUCCESS) {
+        vk_device_fault_report(r);
+        rt_fatal("vk: vkQueueSubmit2 of a helper part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
+    }
+}
 
 VkCommandBuffer vk_sync_split_wait(void) { return split_impl(1); }
 
