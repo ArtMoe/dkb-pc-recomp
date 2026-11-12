@@ -148,15 +148,16 @@ enlarged uniformly and cropped vertically, while the logo and text keep their pr
 Corner HUD elements, including saving/loading indicators, can move to the screen edges
 or remain in a centered 16:9 area. Menu controls and world markers remain centered.
 
-Open F1 → Screen to set **Ultrawide**, **Render resolution**, and **HUD position**.
+Open F1 → Display → Resolution to set **Render resolution**. The **Ultrawide** section on the Display tab contains the wide view toggle and **HUD position**.
+The **Graphics** tab contains **Render Options**, **Color**, and **HDR**.
 Ultrawide is off by default; HUD placement defaults to **Screen edges** when enabled.
 All three settings currently require a restart. Available resolution presets are:
 
 | Ultrawide | Aspect-ratio group | Presets |
 | --- | --- | --- |
-| Off | 16:9 | 1280x720, 1600x900, 1920x1080, 2560x1440, 2880x1620 |
-| On | 21:9 class | 2560x1080, 3440x1440 |
-| On | 32:9 | 3840x1080 |
+| Off | 16:9 | 1280x720, 1600x900, 1920x1080, 2560x1440, 2880x1620, 3840x2160 |
+| On | 21:9 class | 2560x1080, 3440x1440, 3840x1600, 5120x2160 |
+| On | 32:9 | 3840x1080, 5120x1440 |
 
 The original virtual-display functions return 2880x1620 (16:9); this remains the
 default when no resolution is selected. These dimensions do not establish the native

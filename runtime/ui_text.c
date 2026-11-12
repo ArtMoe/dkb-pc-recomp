@@ -27,7 +27,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",
-    [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
+    [UI_MENU_TAB_DISPLAY] = "Display", [UI_MENU_TAB_GRAPHICS] = "Graphics",
+    [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
     [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_IS_DEFAULT] = "Default",
@@ -54,15 +55,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
-    [UI_MENU_GRAPHICS] = "Picture",
+    [UI_MENU_RESOLUTION_GROUP] = "Resolution",
+    [UI_MENU_DISPLAY_OUTPUT] = "Display output",
+    [UI_MENU_RENDER_OPTIONS] = "Render Options",
     [UI_MENU_OUTPUT_RES] = "Render resolution",
     [UI_MENU_ULTRAWIDE] = "Ultrawide",
-    [UI_MENU_ULTRAWIDE_DESC] = "Expand the camera's horizontal view for 21:9 or 32:9. Menus keep their proportions. "
-                              "Off uses a 16:9 view. Changing this selects a resolution with the nearest height. Restart to apply.",
+    [UI_MENU_ENABLE_ULTRAWIDE] = "Enable ultrawide",
+    [UI_MENU_ULTRAWIDE_DESC] = "Widens the game view for 21:9 and 32:9 displays.",
     [UI_MENU_WIDE_RES] = "Render resolution",
-    [UI_MENU_WIDE_RES_DESC] = "The resolution the game renders before scaling the image to your window or screen. "
-                             "Higher resolutions improve detail but need more GPU time and video memory. "
-                             "Ultrawide enables the 21:9 and 32:9 choices. Restart to apply.",
+    [UI_MENU_WIDE_RES_DESC] = "Sets the resolution of the game image before it is scaled to your display. "
+                             "Higher resolutions can look sharper and use more GPU power and video memory.\n\n"
+                             "Enable Ultrawide for 21:9 and 32:9 options.",
     [UI_MENU_HUD_POSITION] = "HUD position",
     [UI_MENU_HUD_POSITION_DESC] = "Place corner displays near the screen edges, or keep them inside a centered 16:9 "
                                  "area. Menus and aiming markers stay centered. Restart to apply.",
@@ -89,6 +92,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_NO_UPSCALING] = "Requires a smaller game image",
+    [UI_MENU_SHARPNESS_NEEDS_FSR] = "Requires AMD FSR 1",
     [UI_MENU_SMAA] = "Anti-aliasing (SMAA)",
     [UI_MENU_SMAA_DESC] = "Smooths jagged edges on the final picture, after it is scaled to the window and before this "
                           "menu is drawn. The HUD is smoothed too. Higher quality costs more GPU time.",
@@ -126,21 +131,22 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_UI] = "Menu brightness",
     [UI_MENU_HDR_UI_DESC] = "Nits of this menu's white. The game's HUD is part of the picture and follows Game brightness.",
 
+    [UI_MENU_FRAME_RATE_GROUP] = "Frame rate",
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
-    [UI_MENU_DKB_FPS_LIMIT_DESC] = "With Game speed follows the clock enabled, changes apply immediately. Above 60 "
-                                 "needs that experimental setting and enough CPU and GPU performance. Unlimited is experimental.",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "Caps the game’s frame rate. Monitor refresh uses the current refresh rate of your display.",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
                                "follows the clock. Unlimited is experimental.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
-    [UI_MENU_FPS_DISPLAY] = "Monitor rate", [UI_MENU_FPS_DISPLAY_HZ] = "Monitor rate (%.0f Hz)",
+    [UI_MENU_FPS_DISPLAY] = "Monitor refresh", [UI_MENU_FPS_DISPLAY_HZ] = "Monitor refresh (%.0f Hz)",
     [UI_MENU_FPS_UNLIMITED] = "Unlimited",
-    [UI_MENU_FPS_NEEDS_REALTIME] = "Needs Game speed follows the clock (restart): limits below and above 60 FPS",
+    [UI_MENU_FPS_NEEDS_REALTIME] = "Enable \"Allow higher frame rates\" and restart",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
-    [UI_MENU_DKB_REALTIME_DESC] = "Experimental; off by default. Adjusts game timing to measured frame duration. "
-                                "Camera, physics, cutscenes and audio still need validation. Requires restarting.",
+    [UI_MENU_DKB_REALTIME] = "Allow higher frame rates",
+    [UI_MENU_DKB_REALTIME_DESC] = "Unlocks the Frame rate limit setting, including rates above 60 FPS. "
+                                "Game timing adapts as FPS changes. This mode is experimental.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
@@ -344,7 +350,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
-    [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
+    [UI_MENU_TAB_DISPLAY] = "Экран", [UI_MENU_TAB_GRAPHICS] = "Графика",
+    [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
     [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
@@ -373,15 +380,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
-    [UI_MENU_GRAPHICS] = "Изображение",
+    [UI_MENU_RESOLUTION_GROUP] = "Разрешение",
+    [UI_MENU_DISPLAY_OUTPUT] = "Вывод изображения",
+    [UI_MENU_RENDER_OPTIONS] = "Настройки рендеринга",
     [UI_MENU_OUTPUT_RES] = "Разрешение рендеринга",
     [UI_MENU_ULTRAWIDE] = "Ультраширокий экран",
-    [UI_MENU_ULTRAWIDE_DESC] = "Расширяет обзор камеры по горизонтали для 21:9 или 32:9. Меню сохраняют пропорции. "
-                              "При выключении используется обзор 16:9. Выбирается разрешение с ближайшей высотой. Требуется перезапуск.",
+    [UI_MENU_ENABLE_ULTRAWIDE] = "Включить ультраширокий режим",
+    [UI_MENU_ULTRAWIDE_DESC] = "Расширяет обзор в игре на экранах 21:9 и 32:9.",
     [UI_MENU_WIDE_RES] = "Разрешение отрисовки",
     [UI_MENU_WIDE_RES_DESC] = "Разрешение игры до масштабирования под окно или экран. Более высокое улучшает "
                              "детализацию, но требует больше ресурсов GPU и видеопамяти. "
-                             "Ультраширокий режим добавляет варианты 21:9 и 32:9. Требуется перезапуск.",
+                             "Ультраширокий режим добавляет варианты 21:9 и 32:9.",
     [UI_MENU_HUD_POSITION] = "Положение интерфейса",
     [UI_MENU_HUD_POSITION_DESC] = "Расположить угловые индикаторы у краёв экрана или в центральной области 16:9. "
                                  "Меню и прицел остаются в центре. Требуется перезапуск.",
@@ -407,6 +416,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_NO_UPSCALING] = "Нужно меньшее разрешение игры",
+    [UI_MENU_SHARPNESS_NEEDS_FSR] = "Требуется AMD FSR 1",
     [UI_MENU_SMAA] = "Сглаживание (SMAA)",
     [UI_MENU_SMAA_DESC] = "Сглаживает лесенки на готовой картинке после масштабирования под окно и до отрисовки этого "
                           "меню. Интерфейс игры тоже сглаживается. Чем выше качество, тем больше нагрузка на GPU.",
@@ -444,20 +455,21 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_UI] = "Яркость меню",
     [UI_MENU_HDR_UI_DESC] = "Ниты белого цвета этого меню. Интерфейс игры — часть картинки и следует яркости игры.",
 
+    [UI_MENU_FRAME_RATE_GROUP] = "Частота кадров",
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
-    [UI_MENU_DKB_FPS_LIMIT_DESC] = "При включённой настройке «Скорость игры по часам» изменения применяются сразу. "
-                                 "Для частоты выше 60 нужны этот экспериментальный режим и достаточная производительность CPU и GPU. «Без ограничения» — экспериментально.",
+    [UI_MENU_DKB_FPS_LIMIT_DESC] = "Ограничивает частоту кадров игры. Вариант «Частота экрана» использует текущую частоту экрана.",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
                                "игры по часам». «Без ограничения» — экспериментально.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
-    [UI_MENU_FPS_DISPLAY] = "Как у монитора", [UI_MENU_FPS_DISPLAY_HZ] = "Как у монитора (%.0f Гц)",
+    [UI_MENU_FPS_DISPLAY] = "Частота экрана", [UI_MENU_FPS_DISPLAY_HZ] = "Частота экрана (%.0f Гц)",
     [UI_MENU_FPS_UNLIMITED] = "Без ограничения",
-    [UI_MENU_FPS_NEEDS_REALTIME] = "Нужна «Скорость игры по часам» (перезапуск): частоты ниже и выше 60 FPS",
+    [UI_MENU_FPS_NEEDS_REALTIME] = "Разрешите высокий FPS и перезапустите игру",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
-    [UI_MENU_DKB_REALTIME_DESC] = "Экспериментальный режим, по умолчанию выключен. Шаг игрового времени зависит от длительности кадра. "
-                                "Камера, физика, кат-сцены и звук ещё требуют проверки. Нужен перезапуск.",
+    [UI_MENU_DKB_REALTIME] = "Разрешить высокий FPS",
+    [UI_MENU_DKB_REALTIME_DESC] = "Позволяет выбрать лимит кадров, в том числе выше 60 FPS. "
+                                "Игровое время подстраивается под частоту кадров. Режим экспериментальный.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",

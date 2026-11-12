@@ -27,6 +27,8 @@ void opt_end(void);
 void opt_reserve_bottom(float h);
 // The next page's first row takes the controller's cursor (opening the menu, switching tabs).
 void opt_focus_first(void);
+// Let a section header take the pending first-item focus on a page with collapsed sections.
+void opt_focus_first_item(void);
 // The row of key (or button id) takes the cursor, scrolled into view, when it is next drawn.
 void opt_focus_key(const char *key);
 // The next row is greyed out like one the environment fixes, with note under its label and in its description.
