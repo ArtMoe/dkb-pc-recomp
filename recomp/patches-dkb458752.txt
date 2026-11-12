@@ -89,3 +89,29 @@ site mousecamera main 192b690 bd407260 bd407260 943b92ec  # SnapEnd manual input
 # without reloading it. runtime/dkb_camera.c pitch_activity sets s0=1 only for matching
 # vertical mouse activity, taking the native activity branch at 173589c to 17358c8.
 site mousecamera main 192b74c aa0003f3 aa0003f3 943b92bd  # AcceptRequest manual input check  [1.0.0 173587c]
+
+# Recursive spin locks of main (tools/spin_waits.py): a thread that spins here with every virtual core taken starves the
+# lock owner, which needs a core to release the lock (heap and RomFS stalls, issue 126).
+spin main 160f0 16104   # recursive spin lock
+spin main 16480 16494   # recursive spin lock
+spin main 13e8f4 13e908   # recursive spin lock
+spin main 173b28 173b3c   # recursive spin lock
+spin main 174954 174968   # recursive spin lock
+spin main 1749b8 1749cc   # recursive spin lock
+spin main 174a1c 174a30   # recursive spin lock
+spin main 175dc8 175ddc   # recursive spin lock
+spin main 175e2c 175e40   # recursive spin lock
+spin main 194d14 194d28   # recursive spin lock
+spin main 19fbc8 19fbdc   # recursive spin lock
+spin main 207588 20759c   # recursive spin lock
+spin main 20867c 208690   # recursive spin lock
+spin main 2623d0 2623e4   # recursive spin lock
+spin main 287870 287884   # recursive spin lock
+spin main 287d70 287d84   # recursive spin lock
+spin main 2893fc 289410   # recursive spin lock
+spin main 28a47c 28a490   # recursive spin lock
+spin main 28bfc0 28bfd4   # recursive spin lock
+spin main 3dfc08 3dfc1c   # recursive spin lock
+spin main 40b508 40b51c   # recursive spin lock
+spin main 4a9f2c 4a9f40   # recursive spin lock
+spin main 4c0b6c 4c0b80   # recursive spin lock
