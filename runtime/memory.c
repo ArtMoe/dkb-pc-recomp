@@ -101,6 +101,8 @@ static volatile int32_t nfrz;
 static PlatMutex frz_lock = PLAT_MUTEX_INIT;
 static volatile int64_t frz_count[4];   // freezes; thaws by a write fault, by mem_thaw, by a mapping change
 
+static int heap_lazy(void);
+
 static int watched(uint64_t addr, uint64_t size) {
     const RtGuestLayout *g = &L;
     return (addr >= g->aslr.base && size <= LOW_SIZE && addr - g->aslr.base <= LOW_SIZE - size) ||
@@ -146,7 +148,8 @@ static int freeze_locked(uint64_t r) {
         if (st >= PLAT_PROT_NONE) {
             if (st != PLAT_PROT_RW || n == 16) return 0;
             run[n][0] = x, run[n][1] = y, n++;
-        } else if (st != PLAT_MEM_RESERVED) return 0;
+        } else if (st != PLAT_MEM_RESERVED || (heap_lazy() && x >= L.heap.base && x < L.heap.base + heap_size)) return 0;
+        // (a lazy-heap hole may be committed by fault_veh at any moment, so such a region is never frozen)
     }
     for (int i = 0; i < n; i++)
         if (!plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_READ)) {
@@ -322,6 +325,9 @@ void mem_commit_report(const char *when) {
     plat_commit_info(&proc, &used, &limit);
     char gpu[256];
     vk_mem_gpu_summary(gpu, sizeof gpu);
+#ifdef _WIN32
+    if (heap_lazy()) rt_log("mem: lazy heap: %llu commit faults so far", (unsigned long long)plat_mem_lazy_faults());
+#endif
     rt_log("mem: commit %s: guest heap+stack %.0f MiB, alias %.0f, modules %.0f, kernel %.0f, other private %.0f, mapped "
            "%.0f, image %.0f; process commit %.0f MiB (limit %.0f), guest heap+stack resident %.0f MiB%s", when, s[B_LOW] / M,
            s[B_ALIAS] / M, s[B_MODS] / M, s[B_KERNEL] / M, s[B_PRIVATE] / M, s[B_MAPPED] / M, s[B_IMAGE] / M, proc, limit,
@@ -353,15 +359,57 @@ static int overlaps(uint64_t a, uint64_t n, uint64_t b, uint64_t m) { return a <
 static int inside(uint64_t a, uint64_t n, RtRange r) { return a >= r.base && n <= r.size && a - r.base <= r.size - n; }
 
 // ---- 0x01 SetHeapSize
+// TOTK_HEAP_LAZY=1 (Windows only, ignored elsewhere): the heap stays reserved and its pages are committed when touched,
+// so the commit charge follows what the game uses instead of what it asked for.
+static int heap_lazy(void) {
+#ifdef _WIN32
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_HEAP_LAZY");
+    return on;
+#else
+    return 0;
+#endif
+}
+
+// Commits the reserved pages of [a, a+n) that lie in the guest heap, in 64 KiB chunks, before something other than the
+// CPU (a kernel file read, a driver importing host memory) accesses them: those accesses fail on a reserved page
+// instead of faulting into fault_veh. Committed pages are left alone. No-op without TOTK_HEAP_LAZY.
+void mem_touch(uint64_t a, uint64_t n) {
+    if (!n || !heap_lazy()) return;
+    uint64_t lo = L.heap.base, hi = lo + __atomic_load_n(&heap_size, __ATOMIC_RELAXED);
+    uint64_t s = a & ~0xffffull, e = (a + n + 0xffff) & ~0xffffull;
+    if (s < lo) s = lo;
+    if (e > hi) e = hi;
+    if (s >= e) return;
+    plat_mutex_lock(&frz_lock);   // freeze_locked refuses regions with holes, so a commit here never lands in a frozen one
+    for (uint64_t x = s, y; x < e; x = y) {
+        int st = plat_mem_state(x, e, &y);
+        if (st == PLAT_MEM_RESERVED && !plat_mem_commit(x, y - x)) {
+            plat_mutex_unlock(&frz_lock);
+            rt_fatal("memory: lazy heap commit %#llx+%#llx failed", (unsigned long long)x, (unsigned long long)(y - x));
+        }
+    }
+    plat_mutex_unlock(&frz_lock);
+}
+
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     plat_mutex_lock(&lock);
     if (size > HEAP_CAP || size % 0x200000 || size + image_bytes() > L.pool) {
         plat_mutex_unlock(&lock);
         return R_INVALID_STATE;
     }
-    if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
+    // TOTK_HEAP_LAZY: growing leaves the new range reserved; platform/win32.c fault_veh commits it on first touch and
+    // mem_touch before a kernel or driver access. Shrinking decommits (a no-op on pages never committed).
+    if (size > heap_size && !heap_lazy()) commit(L.heap.base + heap_size, size - heap_size, "heap");
+#ifdef _WIN32
+    // On a shrink the handler's range drops first, so no fault recommits what decommit gives back.
+    if (heap_lazy() && size < heap_size) plat_mem_lazy(L.heap.base, size);
+#endif
     if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
     heap_size = size;
+#ifdef _WIN32
+    if (heap_lazy()) plat_mem_lazy(L.heap.base, heap_size);
+#endif
     plat_mutex_unlock(&lock);
     if (addr) *addr = L.heap.base;
     return R_OK;
@@ -484,6 +532,7 @@ static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
                 goto out;
             }
         commit(dst, n, "moved stack");
+        if (in_heap) mem_touch(src, n);   // protect() below fails on a page the lazy heap never committed
         memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
         protect(src, n, PLAT_PROT_NONE, "moved stack source");
         stack_maps[nstack_maps++] = (StackMap){dst, src, n};

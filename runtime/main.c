@@ -232,6 +232,12 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
+#ifdef _WIN32
+    uint64_t lazy_at;
+    uint32_t lazy_err = plat_mem_lazy_failure(&lazy_at);
+    if (lazy_err)
+        rt_logf("  lazy heap commit failed: error %u at %#llx, commit limit reached?\n", lazy_err, (unsigned long long)lazy_at);
+#endif
     uint64_t f = lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
     for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it

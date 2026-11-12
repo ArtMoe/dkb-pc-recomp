@@ -31,6 +31,7 @@ void rt_fatal(const char *fmt, ...) {
 }
 void rt_log(const char *fmt, ...) { (void)fmt; }
 void mem_thaw(uint64_t a, uint64_t n) { (void)a, (void)n; }
+void mem_touch(uint64_t a, uint64_t n) { (void)a, (void)n; }
 
 static int failures;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)

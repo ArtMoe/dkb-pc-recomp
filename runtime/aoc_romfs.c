@@ -278,6 +278,7 @@ uint32_t aoc_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint6
     uint64_t done = 0;
     while (done < n) {
         uint32_t chunk = n - done > (1u << 20) ? (1u << 20) : (uint32_t)(n - done);
+        mem_touch((uintptr_t)buffer + done, chunk);   // a lazily committed page fails the kernel's write too
         mem_thaw((uintptr_t)buffer + done, chunk);
         int64_t got = plat_file_pread(image, (uint8_t *)buffer + done, chunk, r.offset + (uint64_t)offset + done);
         if (got <= 0) rt_fatal("aoc: read failure at %#llx", (unsigned long long)(r.offset + offset + done));

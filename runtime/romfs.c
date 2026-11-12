@@ -74,6 +74,7 @@ static double now_s(void) { return (double)plat_now_ns() / 1e9; }
 // ---- positional reads
 // Bytes read at off (0 at or past the end of the file), -1 on an I/O error.
 static int64_t read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
+    mem_touch((uintptr_t)buf, n);  // a lazily committed page fails the kernel's write too
     mem_thaw((uintptr_t)buf, n);   // the kernel's write would fail on a frozen page instead of faulting
     int64_t got = plat_file_pread(f, buf, n, off);
     if (got == -2)   // a read-only page in the buffer: a frozen region missed its thaw
