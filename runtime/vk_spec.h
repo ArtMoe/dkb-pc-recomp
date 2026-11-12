@@ -7,11 +7,11 @@
 // helpers' command buffers in order as the next parts of the submission (vk_exec.c par_join, vk_sync.c
 // vk_sync_split_insert) and goes on after the last of them.
 //
-// There are up to VK_SPEC_HELPERS of them. TOTK_REPLAY_HELPERS says how many; without it the logical processors do
-// (five from 24, four from 16, two from 12, one below: the game's own threads, the replay thread and the recorder
-// come first). On a Ryzen 7 5700X3D (16 logical processors) a scene of 27,000 draws took 45 ms a frame with one,
-// 41 with two, 36 with three, 34 with four and 33 with five. How many of them a run uses depends on its length
-// (vk_exec.c par_count).
+// There are up to VK_SPEC_HELPERS of them. TOTK_REPLAY_HELPERS says how many; without it the logical processors of
+// the process do (vk_spec_helpers_for). On a Ryzen 7 5700X3D (16 logical processors) a scene of 27,000 draws took
+// 45 ms a frame with one, 41 with two, 36 with three, 34 with four and 33 with five. Held to its first 8 logical
+// processors it took 71 ms with none, 52 with one, 44 with two and 42 with three; held to 4, 74 with none, 58 with
+// one and 52 with two. How many of them a run uses depends on its length (vk_exec.c par_count).
 //
 // A helper works on a guess: the state the replay thread will have at the meeting point, derived from the ops alone.
 // Whatever it cannot do without changing what the replay thread sees (a GPU write, a texture upload, a new image, a
@@ -84,6 +84,10 @@ uint32_t vk_spec_events(void);
 // ---- replay thread. k is a helper's number, 0 to vk_spec_count() - 1.
 int vk_spec_on(void);                                  // the switch is on now and the threads run
 int vk_spec_count(void);                               // the helper threads that run (0 before the first vk_spec_on)
+// The helper threads started without TOTK_REPLAY_HELPERS, for a process with this many logical processors: five from
+// 24, four from 16, three from 8, two from 4, one below (each helper wants a processor to itself next to the replay
+// thread, the recorder and the game's own threads).
+int vk_spec_helpers_for(uint32_t cpus);
 // TOTK_REPLAY_PAR=check: every part is translated by its helper and by the replay thread and compared; the replay
 // thread's is the one submitted (vk_exec.c par_check).
 int vk_spec_checking(void);
