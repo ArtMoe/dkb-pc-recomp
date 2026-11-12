@@ -51,14 +51,9 @@ VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
 static int nfw;
 
-// The helper threads' draw translators (vk_spec.h), by helper number.
-static const VkExecHelper *const helper_tr[] = {&vk_exec_draw2_helper, &vk_exec_draw3_helper, &vk_exec_draw4_helper,
-                                                &vk_exec_draw5_helper, &vk_exec_draw6_helper};
-_Static_assert(sizeof helper_tr / sizeof helper_tr[0] == VK_SPEC_HELPERS, "a draw translator for each helper thread");
-
-// The counters of the calling thread: a helper thread keeps its own for the part it records, and they are added to
-// vk_exec_frame when the part is taken (par_join).
-#define FRAME (vk_spec_here ? helper_tr[vk_spec_here - 1]->frame : &vk_exec_frame)
+// The counters of the calling thread: a helper thread keeps its own for the part it records (in its draw context), and
+// they are added to vk_exec_frame when the part is taken (par_join).
+#define FRAME (vk_spec_here ? vk_exec_draw_helper_frame(vk_spec_here - 1) : &vk_exec_frame)
 
 uint64_t vk_exec_recording_fence(void) { return x_here ? X.fence : vk_spec_helper() ? vk_spec_fence() : 0; }
 
@@ -121,6 +116,7 @@ static void warn_once(int key, const char *fmt, ...) {
 // NVN defaults of the replay state (nvn_mtl.m).
 static void state_reset(VkExec *ex) {
     memset(ex, 0, sizeof *ex);
+    ex->draw = vk_exec_draw_main();
     ex->st_vmask[0] = ex->st_vmask[1] = ex->st_wmask[0] = ex->st_wmask[1] = 0xff;
     ex->depth_range[1] = 1.0f;
     vk_pipe_state_defaults(&ex->pipe);
@@ -805,7 +801,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
                     vk_exec_frame.passes++;
                 }
                 vk_texture_gpu_written(t->tex);
-                vk_exec_draw_new_cb();
+                vk_exec_draw_new_cb(ex);
                 ex->dirty = VK_EXEC_DIRTY_ALL;
                 vk_exec_barrier(ex);
             }
@@ -870,7 +866,7 @@ static void maybe_split(VkExec *ex) {
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
     ex->dirty = VK_EXEC_DIRTY_ALL;
-    vk_exec_draw_new_cb();
+    vk_exec_draw_new_cb(ex);
     n_parts++;
 }
 
@@ -913,7 +909,7 @@ int vk_exec_read_buffer(VkExec *ex, uint64_t addr, uint64_t size, void *out) {
     part_t0 = kern_now_ns();
     ex->barrier_at = -1;
     ex->dirty = VK_EXEC_DIRTY_ALL;
-    vk_exec_draw_new_cb();
+    vk_exec_draw_new_cb(ex);
     n_parts++;
     VkResult result = vmaInvalidateAllocation(c->vma, allocation, 0, size);
     if (result == VK_SUCCESS) memcpy(out, mapped.pMappedData, (size_t)size);
@@ -1042,7 +1038,7 @@ typedef struct {
 } ParSlot;
 static ParSlot par_slots[PAR_SLOTS];
 
-// One part of the run being walked: part i is translated by helper i (vk_spec.h) with helper_tr[i].
+// One part of the run being walked: part i is translated by helper i (vk_spec.h), with draw context i.
 typedef struct {
     const op_hdr *cut, *hend;           // its first op, and the op after its last (the next part's first)
     uint32_t c, y;                      // its draws: c to y
@@ -1113,10 +1109,11 @@ static void par_watch(void) {
     P.ord++;
 }
 
-// Helper thread, with its translator t: the ops from h up to end. state_only: only what they leave in the replay
+// Helper thread, with its draw context in place: the ops from h up to end. state_only: only what they leave in the replay
 // state (the ops the replay thread and the helpers before translate meanwhile); otherwise recorded into ex->cb. Stops
 // at the first op after the part was given up.
-static void par_walk(const VkExecHelper *t, VkExec *ex, const op_hdr *h, const op_hdr *end, int state_only) {
+static void par_walk(VkExec *ex, const op_hdr *h, const op_hdr *end, int state_only) {
+    VkExecFrame *fr = FRAME;
     while (h != end && !vk_spec_failed()) {
         const void *a = nvn_op_payload(h);
         switch (h->op) {
@@ -1137,12 +1134,12 @@ static void par_walk(const VkExecHelper *t, VkExec *ex, const op_hdr *h, const o
             break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND:
             if (state_only) break;
-            t->frame->draws_seen++;
-            t->digest_draw(ex);
+            fr->draws_seen++;
+            vk_exec_draw_digest_draw(ex);
             // fall through
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_PUSH_CONST:
-            t->op(ex, h->op, a);
+            vk_exec_op_draw(ex, h->op, a);
             break;
         default:
             if (!state_op(ex, h->op, a)) vk_spec_fail(VK_SPEC_OP);   // par_scan lets no other op into a run
@@ -1154,10 +1151,10 @@ static void par_walk(const VkExecHelper *t, VkExec *ex, const op_hdr *h, const o
 // Helper thread: its part. The command buffer is ended whatever happens: it is begun again for a later part.
 static void par_job(void *arg) {
     ParPart *p = arg;
-    const VkExecHelper *t = helper_tr[p - P.part];
     uint64_t t0 = kern_now_ns();
     VkExec *ex = &p->H;
-    par_walk(t, ex, P.from, p->cut, 1);
+    vk_exec_draw_rebase(ex);   // what the helper's context derived from its previous part's state goes
+    par_walk(ex, P.from, p->cut, 1);
     // The command buffer starts as the replay thread's do (record_impl); every image is in GENERAL: the part before
     // ends with a full barrier, the replay thread's (par_join) or a helper's (below).
     ex->recorded = 0, ex->in_pass = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0, ex->barrier_at = -1;
@@ -1167,8 +1164,8 @@ static void par_job(void *arg) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(ex->cb, &bi);
-    if (vk_spec_checking()) t->digest_begin(ex);
-    par_walk(t, ex, p->cut, p->hend, 0);
+    if (vk_spec_checking()) vk_exec_draw_digest_begin(ex);
+    par_walk(ex, p->cut, p->hend, 0);
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);   // the part behind begins after a full barrier, as after the replay thread's own parts
     vkEndCommandBuffer(ex->cb);
@@ -1186,19 +1183,19 @@ static void par_launch(VkExec *ex) {
     uint32_t k = 0;
     for (; k < P.k; k++) {
         ParPart *p = &P.part[k];
-        const VkExecHelper *t = helper_tr[k];
         VkCommandBuffer cb = vk_spec_cb((int)k, ex->fence);
         if (!cb) break;
-        if (!t->begin()) {
+        struct DrawCtx *draw = vk_exec_draw_helper_begin((int)k);
+        if (!draw) {
             vk_spec_cb_drop((int)k);
             break;
         }
         void *views = p->H.views;   // the helper's own list of views, kept from part to part
         int cap = p->H.cap_views;
         memcpy(&p->H, ex, sizeof p->H);
-        p->H.cb = cb, p->H.in_pass = 0, p->H.views = views, p->H.nviews = 0, p->H.cap_views = cap;
+        p->H.cb = cb, p->H.in_pass = 0, p->H.views = views, p->H.nviews = 0, p->H.cap_views = cap, p->H.draw = draw;
         PW[k].n = 0;
-        memset(t->frame, 0, sizeof *t->frame);
+        memset(vk_exec_draw_helper_frame((int)k), 0, sizeof(VkExecFrame));
         p->busy_ns = p->state_ns = 0;
         p->out = 1, p->taken = 0;
         vk_dlss_part_begin((int)k);
@@ -1409,7 +1406,7 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
     ParSlot *s = P.slot;
     uint32_t i = P.ji;
     ParPart *p = &P.part[i];
-    const VkExecHelper *t = helper_tr[i];
+    const VkExecFrame *hf = vk_exec_draw_helper_frame((int)i);
     int last = i + 1 == P.k;
     if (last) P.state = PS_END, P.next = P.stop;
     else P.ji = i + 1, P.next = P.part[i + 1].cut;   // PS_JOIN again
@@ -1448,7 +1445,7 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
         PW[i].n = 0;
         ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0, ex->barrier_at = -1;
         ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
-        vk_exec_draw_rebase();
+        vk_exec_draw_rebase(ex);
         P.chk_frame = vk_exec_frame;
         vk_exec_draw_digest_begin(ex);
         par_no_split = 1;
@@ -1467,8 +1464,8 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
     PW[i].n = 0;
     vk_dlss_part_taken((int)i);
     for (size_t j = 0; j < sizeof vk_exec_frame / sizeof(uint64_t); j++)
-        ((uint64_t *)&vk_exec_frame)[j] += ((const uint64_t *)t->frame)[j];
-    draws_total += t->frame->draws_seen;   // walk did not see the part's draws (a part holds no dispatch)
+        ((uint64_t *)&vk_exec_frame)[j] += ((const uint64_t *)hf)[j];
+    draws_total += hf->draws_seen;   // walk did not see the part's draws (a part holds no dispatch)
     // The replay state after the part is the helper's: everything from the render targets to the bindings. The command
     // buffer is new, the targets are resolved again, and no memo of this thread's translator knows the state.
     uint32_t tex_serial = (ex->tex_serial > p->H.tex_serial ? ex->tex_serial : p->H.tex_serial) + 1;
@@ -1478,7 +1475,7 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
     ex->in_pass = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->rt_resolved = 0;
     ex->nfbl = 0, ex->fbl_mask = 0, ex->fb_dirty = 0, ex->fb_fs = NULL;
     ex->tex_serial = tex_serial, ex->pass_serial = pass_serial;
-    vk_exec_draw_rebase();
+    vk_exec_draw_rebase(ex);
     split_draws = 0;
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
@@ -1494,12 +1491,11 @@ static const op_hdr *par_join(VkExec *ex, const op_hdr *h) {
 // recorded the same, and left the same replay state.
 static void par_check(VkExec *ex) {
     const ParPart *p = &P.part[P.ci];
-    const VkExecHelper *t = helper_tr[P.ci];
     const uint64_t *a, *b;
     vk_exec_pass_end(ex);   // as the helper ends its part (par_job)
     vk_exec_barrier(ex);
-    uint32_t na = vk_exec_draw_digest_end(ex, &a), nb = t->digest_end(&p->H, &b), at = 0;
-    const VkExecFrame *f = &vk_exec_frame, *f0 = &P.chk_frame, *hf = t->frame;
+    uint32_t na = vk_exec_draw_digest_end(ex, &a), nb = vk_exec_draw_digest_end(&p->H, &b), at = 0;
+    const VkExecFrame *f = &vk_exec_frame, *f0 = &P.chk_frame, *hf = vk_exec_draw_helper_frame((int)P.ci);
     static const char *const word[VK_EXEC_DIG_W] = {
         "the image views a draw binds", "the samplers a draw binds", "the image layouts a draw binds",
         "the uniform buffer ranges a draw binds", "the uniform buffers a draw binds",

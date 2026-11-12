@@ -23,7 +23,7 @@ static void warn_once(int key, const char *fmt, ...) { (void)key; (void)fmt; }
 VkRect2D vk_exec_scissor(const VkExec *ex) { (void)ex; return rect; }
 void vk_exec_barrier(VkExec *ex) { barriers++; ex->in_pass = 0; }
 void vk_exec_pass_begin(VkExec *ex) { ex->in_pass = 1; }
-void vk_exec_draw_new_cb(void) { forgotten++; }
+void vk_exec_draw_new_cb(VkExec *ex) { (void)ex; forgotten++; }
 void vk_texture_gpu_written(const tex_t *t) { (void)t; gpu_written++; }
 // The replay thread's side of vk_exec.c target_written; a checkout from before it calls vk_texture_gpu_written itself.
 static void target_written(const VkExecTarget *t, uint64_t stamp) { (void)stamp; vk_texture_gpu_written(t->tex); }

@@ -1,6 +1,6 @@
 """Exercise the descriptor memo switches through the production functions.
 
-The storage-bind serial of c0 (c0_info in vk_exec_draw.c) and the sampler generation of vk_texture.c
+The storage-bind serial of c0 (c0_info in vk_exec_draw.c, on a draw context of the fixture's) and the sampler generation of vk_texture.c
 (descriptor_registered) are cut out of the runtime sources and linked against a scratch allocator in host memory. No
 Vulkan loader or GPU is linked. Every switch is set to "ab", so each case runs with the switch off (bananza's
 behaviour) and on, and flips it between calls the way TOTK_AB does inside one run.
@@ -11,7 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from nvn2_compute_c0_test import function
+from nvn2_compute_c0_test import draw_context, function
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +25,7 @@ def source():
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "nvn_hmap.h"
 #include "vk_exec.h"
 #pragma GCC diagnostic ignored "-Wunused-function"   // the switches of code this fixture does not cut
 #define NVN_STAGE_VS 0
@@ -49,19 +50,17 @@ static uint8_t *scratch(VkExec *ex,uint64_t size,VkBuffer *buf,VkDeviceSize *off
 }
 static const uint8_t *copy_at(VkDescriptorBufferInfo bi) { return scratch_mem[bi.offset/4096]; }
 static unsigned fills;
-void vk_c0_fill(uint8_t bank[VK_C0_BYTES],int stage,const p_bind_buf ssbo[16],const p_bind_buf ubo[16],
-                const uint32_t dim[3],uint32_t base_instance) {
-    (void)ubo; (void)dim;
+@CTX@
+static void c0_fill(DrawCtx *dc,uint8_t bank[VK_C0_BYTES],int stage,const p_bind_buf ssbo[16],const p_bind_buf ubo[16],
+                    const uint32_t dim[3],uint32_t base_instance) {
+    (void)dc; (void)ubo; (void)dim;
     memset(bank,0,VK_C0_BYTES);
     memcpy(bank,&ssbo[0].addr,8), memcpy(bank+8,&base_instance,4), bank[12]=(uint8_t)stage;
     fills++;
 }
-static const Nvn2C0Layout *c0_lay;
+static DrawCtx ctx;   // the replay thread's: c0_lay NULL (NVN 1), the bank memo B, c0_binst, ssbo_serial
 '''
-    b = function(draw, 'static struct {\n    VkPipeline pipe[2];') + ' B;\n'
-    knobs = draw[draw.index('static int knob_on('):draw.index('// TOTK_BIND_STATS counters (bind_stats).')]
-    statics = '\n'.join(line for line in draw.splitlines()
-                        if line.startswith(('static uint32_t c0_dim[3]', 'static uint32_t ssbo_serial[6]')))
+    knobs = draw[draw.index('static int knob_on('):draw.index('static const char *const BSF_NAME[')]
     c0 = function(draw, 'static VkDescriptorBufferInfo c0_info(')
     # vk_texture.c: a slot's kind and serial are all descriptor_registered reads or writes.
     kinds = next(line for line in texture.splitlines() if line.startswith('enum { DESC_TEXTURE = 1'))
@@ -72,8 +71,8 @@ static const Nvn2C0Layout *c0_lay;
     tests = r'''
 static void c0_cases(VkExec *ex) {
     p_bind_buf x={.addr=0x10000,.size=0x100}, y={.addr=0x20000,.size=0x100};
-    ex->ssbo[NVN_STAGE_VS][0]=x, ssbo_serial[NVN_STAGE_VS]++, c0_binst=0;
-    memset(B.c0_valid,0,sizeof B.c0_valid);
+    ex->ssbo[NVN_STAGE_VS][0]=x, ctx.ssbo_serial[NVN_STAGE_VS]++, ctx.c0_binst=0;
+    memset(ctx.B.c0_valid,0,sizeof ctx.B.c0_valid);
     for (int on=0; on<2; on++) {
         ab=on, fills=0;
         VkDescriptorBufferInfo a=c0_info(ex,NVN_STAGE_VS), b=c0_info(ex,NVN_STAGE_VS);
@@ -81,26 +80,26 @@ static void c0_cases(VkExec *ex) {
         uint64_t got;
         memcpy(&got,copy_at(b),8);
         CHECK(got==ex->ssbo[NVN_STAGE_VS][0].addr,"c0: the bank was filled from the bound storage table");
-        ex->ssbo[NVN_STAGE_VS][0]=on ? x : y, ssbo_serial[NVN_STAGE_VS]++;
+        ex->ssbo[NVN_STAGE_VS][0]=on ? x : y, ctx.ssbo_serial[NVN_STAGE_VS]++;
         VkDescriptorBufferInfo c=c0_info(ex,NVN_STAGE_VS);
         memcpy(&got,copy_at(c),8);
         CHECK(got==ex->ssbo[NVN_STAGE_VS][0].addr,"c0: a storage bind gives a bank of the new table");
-        c0_binst=7;
+        ctx.c0_binst=7;
         VkDescriptorBufferInfo d=c0_info(ex,NVN_STAGE_VS);
         uint32_t bi;
         memcpy(&bi,copy_at(d)+8,4);
         CHECK(bi==7 && d.offset!=c.offset,"c0: a new base instance gives a new bank");
-        c0_binst=0;
+        ctx.c0_binst=0;
     }
     // On, then a bind and a call with the switch off, then a bind back and on: the serial moved, so the compare runs.
     ab=1;
-    ex->ssbo[NVN_STAGE_VS][0]=x, ssbo_serial[NVN_STAGE_VS]++;
+    ex->ssbo[NVN_STAGE_VS][0]=x, ctx.ssbo_serial[NVN_STAGE_VS]++;
     c0_info(ex,NVN_STAGE_VS);
     ab=0;
-    ex->ssbo[NVN_STAGE_VS][0]=y, ssbo_serial[NVN_STAGE_VS]++;
+    ex->ssbo[NVN_STAGE_VS][0]=y, ctx.ssbo_serial[NVN_STAGE_VS]++;
     c0_info(ex,NVN_STAGE_VS);
     ab=1;
-    ex->ssbo[NVN_STAGE_VS][0]=x, ssbo_serial[NVN_STAGE_VS]++;
+    ex->ssbo[NVN_STAGE_VS][0]=x, ctx.ssbo_serial[NVN_STAGE_VS]++;
     uint64_t got;
     memcpy(&got,copy_at(c0_info(ex,NVN_STAGE_VS)),8);
     CHECK(got==x.addr,"c0: a flip between binds never answers with the other table's bank");
@@ -136,6 +135,7 @@ static void samp_gen_cases(void) {
 
 int main(void) {
     static VkExec ex;
+    ex.draw=&ctx;
     c0_cases(&ex);
     samp_gen_cases();
     printf("descriptor memo switches: %u checks, %u failures\n",checks,failures);
@@ -143,7 +143,8 @@ int main(void) {
 }
 '''
     adapter = 'typedef struct { uint32_t kind, serial; } DescSlot;\n'
-    return '\n'.join((prelude, b, knobs, statics, c0, kinds, adapter, gens, registered, tests))
+    return '\n'.join((prelude.replace('@CTX@', draw_context(draw)), knobs, c0, kinds, adapter, gens, registered,
+                      tests))
 
 
 def main():
