@@ -132,6 +132,10 @@ assert '--full-build' in a and pathlib.Path(a[a.index('--expected')+1]).name=='e
         self.assertEqual(self.host_warnings(commit_limit_gib=30.0), [])
         self.assertEqual(self.host_warnings(), [])
 
+    def test_shell_special_temp_path_is_flagged(self):
+        self.assertEqual(b.unsafe_temp_chars('/home/u/DKB (2)/build'), '()')
+        self.assertEqual(b.unsafe_temp_chars('/home/u/DKB Recomp/build-1_x.y'), '')
+
     def test_invalid_base_writes_nothing(self):
         (self.exefs / 'main').write_bytes(b'unsupported update')
         code, events = self.run_install()

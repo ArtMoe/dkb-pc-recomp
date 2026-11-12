@@ -202,6 +202,7 @@
  "dkb.path_overlap": "The output and source folders must be separate: {path} and {other}.",
  "dkb.dest_unrelated": "Choose an empty destination or a folder already owned by this Bananza installer: {path}.",
  "dkb.temp_unrelated": "The temporary folder contains unrelated files: {path}. Choose another temporary location.",
+ "dkb.temp_unsafe_path": "The work folder {path} has characters (such as parentheses) that the shader translator build cannot pass to the linker. Move the release folder, or pass --temp with a path made of letters, digits, spaces, dots, dashes and underscores.",
  "dkb.romfs_empty": "No RomFS files were found in {path}.",
  "dkb.input_changed": "The source changed while setup was reading it: {path}. Close programs modifying the dump and try again.",
  "dkb.pack_invalid": "The packed RomFS failed its integrity check in {path}: {detail}.",

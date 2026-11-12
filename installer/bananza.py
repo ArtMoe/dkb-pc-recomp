@@ -255,6 +255,11 @@ def nup_source(layout, path, select):
     return game, hashes, files
 
 
+def unsafe_temp_chars(path):
+    # NativeAOT's generated link script puts the work path on a shell command line unquoted (issue 189).
+    return ''.join(sorted({ch for ch in str(path) if ch in "()&;|<>$`'\"!*?[]{}#~"}))
+
+
 def preflight(layout, options, dest, temp, rep):
     if options.base or options.update or options.keys:
         raise InstallError('dkb.update_unsupported')
@@ -825,6 +830,8 @@ def main(options):
         raw_base = (options.temp or layout.temp or dest.parent / '.dkb-setup').absolute()
         ensure_plain(raw_base)
         base = raw_base.resolve()
+        if os.name != 'nt' and unsafe_temp_chars(base):
+            raise InstallError('dkb.temp_unsafe_path', path=str(base))
         tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:12]
         # The work folder's name goes onto compiler and MSBuild command lines that split on spaces (issue 134): keep
         # only characters that need no quoting. The tag already tells two destinations apart; a name that was safe
