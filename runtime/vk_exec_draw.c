@@ -81,23 +81,33 @@
 #define DRAW_SHARED
 #define DRAW_SHARED_INIT(...) = __VA_ARGS__
 #endif
-#define IS_HELPER(dc) ((void)(dc), HELPER_COPY)
+// A context of another thread than the replay thread's: a helper's, or that of a thread recording slices of parallel
+// passes (vk_exec.c par_record, DrawCtx.slice), which also runs the helper copy. Neither keeps the replay thread's
+// census, slow-part notes or occlusion queries.
+#define OFF_MAIN(dc) ((void)(dc), HELPER_COPY)
+// A helper's context: the helper gives its part up where its work would differ from the replay thread's. A slice's
+// thread records every draw as the replay thread would; what only the primary command buffer may take drops the call
+// and marks a hazard (vk_exec_par_hazard).
+#define IS_HELPER(dc) (HELPER_COPY && !(dc)->slice)
+#define IN_SLICE(dc) (HELPER_COPY && (dc)->slice)
 // The objects both copies share, under names of their own outside this file.
 #define spare_lock vk_exec_draw_spare_lock
 #define spare_pool vk_exec_draw_spare_pool
 #define spare_chunk vk_exec_draw_spare_chunk
 #define nspare_pool vk_exec_draw_nspare_pool
 #define nspare_chunk vk_exec_draw_nspare_chunk
+#define spare_pools vk_exec_draw_spare_pools
 #define standins vk_exec_draw_standins
 #define view_of vk_exec_draw_view_of
 #define views_by_image vk_exec_draw_views_by_image
 
 // The calls below are the replay thread's alone.
-#define vk_mem_count(cls, use, bytes) (IS_HELPER(dc) ? (void)0 : vk_mem_count(cls, use, bytes))   // the census is not atomic
+#define vk_mem_count(cls, use, bytes) (OFF_MAIN(dc) ? (void)0 : vk_mem_count(cls, use, bytes))   // the census is not atomic
 #undef VK_MEM_BOUND
-#define VK_MEM_BOUND(sp) do { if (!IS_HELPER(dc) && (rt_trace & RT_TRACE_PERF) && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
-#define vk_sync_noting() (IS_HELPER(dc) ? 0 : vk_sync_noting())   // the slow-part note is the replay thread's command buffer's
-#define vk_exec_oq_draw(ex) (IS_HELPER((ex)->draw) ? (void)0 : vk_exec_oq_draw(ex))   // no helper part while a counter counts (vk_spec.c)
+#define VK_MEM_BOUND(sp) do { if (!OFF_MAIN(dc) && (rt_trace & RT_TRACE_PERF) && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
+#define vk_sync_noting() (OFF_MAIN(dc) ? 0 : vk_sync_noting())   // the slow-part note is the replay thread's command buffer's
+// No helper part while a counter counts (vk_spec.c); a sliced pass's query began before the pass (vk_exec_oq_begin_outside).
+#define vk_exec_oq_draw(ex) (OFF_MAIN((ex)->draw) ? (void)0 : vk_exec_oq_draw(ex))
 
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
@@ -382,6 +392,9 @@ typedef struct DrawCtx {
     SkipList skip_vs, skip_fs;
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: the frame the full-screen wait budget belongs to, what is left
     struct { int on, filtered; uint64_t filter; unsigned records; } GCL;   // geometry_context_log; on -1: not read yet
+    // token_of: slot tokens by texture id, with the pool, slot generation and memory generation they were read under.
+    struct { uint64_t pool, mg, tok; uint32_t id, sg; } tk[256];
+    int slice;                           // a slice thread's context (vk_exec_draw_slice_ctx)
 } DrawCtx;
 
 // The replay thread's draw context (VkExec.draw of vk_exec.c's state, and DC_OF of this copy); each helper has its
@@ -403,10 +416,15 @@ static void c0_lay_set(VkExec *ex, const GfxShader *cs) {
 // of being destroyed and created again for the next one: each creation is a driver memory allocation (on Windows an
 // allocation, a map and a paging-fence wait on the CPU), about ten of them per frame inside the replay.
 // A pool holds 1024 sets, so 16 spares keep the driver memory they pin (about 150 MB with 64) small.
+// Every thread that records slices of parallel passes takes pools of its own for each submission, so the spares grow by 8
+// a recording thread (vk_exec_draw_slices_begin), up to SPARE_POOLS_MAX: with six threads and 16 spares the workers
+// created pools in the frame, a profile put 17% of their time in kernel calls under vkAllocateDescriptorSets.
 #define SPARE_POOLS 16
+#define SPARE_POOLS_MAX 64
 #define SPARE_CHUNKS 16
 DRAW_SHARED PlatMutex spare_lock DRAW_SHARED_INIT(PLAT_MUTEX_INIT);
-DRAW_SHARED VkDescriptorPool spare_pool[SPARE_POOLS];
+DRAW_SHARED VkDescriptorPool spare_pool[SPARE_POOLS_MAX];
+DRAW_SHARED int spare_pools DRAW_SHARED_INIT(SPARE_POOLS);   // the spares kept (spare_lock)
 DRAW_SHARED Chunk spare_chunk[SPARE_CHUNKS];
 DRAW_SHARED int nspare_pool, nspare_chunk;
 
@@ -449,7 +467,7 @@ static void cb_done(void *arg) {   // completion thread
     for (int i = 0; i < r->npools; i++) {
         vkResetDescriptorPool(c->device, r->pools[i], 0);
         plat_mutex_lock(&spare_lock);
-        int kept = nspare_pool < SPARE_POOLS;
+        int kept = nspare_pool < spare_pools;
         if (kept) spare_pool[nspare_pool++] = r->pools[i];
         plat_mutex_unlock(&spare_lock);
         if (!kept) vkDestroyDescriptorPool(c->device, r->pools[i], NULL);
@@ -590,6 +608,7 @@ static int reset_targets_overlap(const uint64_t *pointers, uint32_t count) {
 int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_bytes, int64_t first, int64_t count) {
     DrawCtx *const dc = DC_OF(ex);
     if (IS_HELPER(dc) && vk_spec_fail(VK_SPEC_WRITE)) return 0;   // reads a buffer back and rewrites it: both need the earlier parts
+    if (IN_SLICE(dc)) return vk_exec_par_hazard(), 0;   // its barriers and reads are the primary's (sliced passes)
     NvnIndirectResetList list;
     if (!nvn_indirect_reset_list(list_addr, descriptor_bytes, first, count, &list)) return 0;
     uint64_t *pointers = malloc(list.bytes);
@@ -1059,8 +1078,20 @@ static uint64_t stage_origin(DrawCtx *dc, const prog_t *p, int nvn_stage) {
 
 
 // vk_texture_slot_token of the slot a texture or image handle names; an empty handle always resolves to nothing.
+// Each context keeps the tokens while the slot and memory generations stay: a token changes only with a registration or
+// an entry change, which bump vk_texture_slots_gen, or with a remapped pool (vk_mem_gen). A profile on eight threads
+// had 7% of the slices' recording, and then 4% of the submitting thread's replay, waiting for the texture lock here.
 static uint64_t token_of(const VkExec *ex, uint64_t h) {
-    return h ? vk_texture_slot_token(&ex->tex_pool, (int)(h & 0xfffff)) : 1;
+    if (!h) return 1;
+    DrawCtx *const dc = DC_OF(ex);
+    int id = (int)(h & 0xfffff);
+    uint32_t sg = vk_texture_slots_gen();
+    uint64_t mg = vk_mem_gen();
+    typeof(dc->tk[0]) *k = &dc->tk[(id ^ id >> 8) & 255];
+    if (k->tok && k->pool == ex->tex_pool.addr && k->id == (uint32_t)id && k->sg == sg && k->mg == mg) return k->tok;
+    uint64_t t = vk_texture_slot_token(&ex->tex_pool, id);
+    *k = (typeof(*k)){ex->tex_pool.addr, mg, t, (uint32_t)id, sg};
+    return t;
 }
 
 static void descriptor_state(VkExec *ex);
@@ -1301,8 +1332,8 @@ static void dp_log(DrawCtx *dc) {
         sum += v;
         o += (size_t)snprintf(line + o, sizeof line - o, "%s%s %.0f", i ? ", " : "", dp_name[i], v);
     }
-    rt_log("vk_exec: draw profile over %llu draws (%llu other ops), ns per draw: %s; total %.0f",
-           (unsigned long long)dc->DP.draws, (unsigned long long)dc->DP.ops, line, sum);
+    rt_log("vk_exec: draw profile (%s) over %llu draws (%llu other ops), ns per draw: %s; total %.0f",
+           dc->slice ? "slices" : "replay thread", (unsigned long long)dc->DP.draws, (unsigned long long)dc->DP.ops, line, sum);
     memset(dc->DP.ticks, 0, sizeof dc->DP.ticks);
     dc->DP.draws = dc->DP.ops = 0, dc->DP.win_tk = tk, dc->DP.win_ns = ns;
 }
@@ -1336,7 +1367,11 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
         if (written && IS_HELPER(dc) && vk_spec_fail(VK_SPEC_WRITE)) return 0;   // as note_written
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+        if (written) {
+            // In a slice, a store over a uniform snapshot copy depends on the draw order (vk_usnap.c vk_usnap_drop).
+            if (IN_SLICE(dc) && vk_usnap_covers(addr, n)) vk_exec_par_order_hazard();
+            vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+        }
         count_use(dc, sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;
@@ -1783,6 +1818,27 @@ static void feedback_written(VkExec *ex, const VkPipeState *s) {
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                           VkDescriptorImageInfo *out, VkImage *image);
 
+
+// The memo hit of tex_info_lookup without the texture lock, for the slices of a parallel pass (vk_exec.c par_record):
+// every slice thread has its own memo, and the hit reads nothing the lock guards (slot_still takes it itself when the
+// global generation moved). With four threads taking the lock for every texture of every draw, the threads spent their
+// time handing it to each other and the replay got slower than on one thread. 0: not a plain hit, take the lock.
+static int tex_info_hit(VkExec *ex, const GfxShaderRes *r, uint64_t h, int separate, VkDescriptorImageInfo *out) {
+    DrawCtx *const dc = DC_OF(ex);
+    if (!h || td_mode() != 1) return 0;
+    descriptor_state(ex);
+    uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();
+    uint64_t key = td_hash_on() ? (h ^ (uint64_t)r->type << 32 ^ (uint64_t)separate << 48) * 0x9E3779B97F4A7C15ull
+                                : h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate;   // as tex_info_lookup
+    typeof(dc->TD[0]) *m = &dc->TD[key >> 51];
+    if (!m->valid || m->context != dc->descriptor_serial || m->h != h || m->type != r->type || m->separate != separate ||
+        m->sgen != sg || m->epoch != ep || !slot_still(ex, &m->gen, m->tok, h, gen))
+        return 0;
+    *out = m->out;
+    out->imageLayout = m->image && ex->nfbl && in_fbl(ex, m->image) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+                                                                      : VK_IMAGE_LAYOUT_GENERAL;
+    return 1;
+}
 
 static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, uint32_t gen,
                             uint32_t ep, uint32_t sg, int *locked, VkDescriptorImageInfo *out) {
@@ -2569,9 +2625,11 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         nd += cnt;
     }
     if (ntp) {
+        // tex_info looks up with the texture lock held: once for the draw's texture bindings. A slice of a parallel pass
+        // first tries its context's memo without the lock (tex_info_hit) and takes the lock for what is left.
         DP_MARK(DP_SIG);
-        vk_texture_lock();   // tex_info looks up with the texture lock held: once for the draw's texture bindings
-        tex_locked = 1;
+        int slice = IN_SLICE(dc);
+        if (!slice) vk_texture_lock(), tex_locked = 1;
         descriptor_state(ex);   // the generations and the epoch are read under the lock, before any lookup
         uint32_t tex_gen = vk_texture_slots_gen(), tex_ep = vk_texture_epoch(), samp_sg = vk_sampler_gen();
         for (int t = 0; t < ntp; t++) {
@@ -2581,11 +2639,12 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                 uint64_t h = 0;
                 if (q->img) h = slot >= 0 && slot < 32 ? ex->img[q->st][slot] : 0;
                 else h = slot >= 0 && slot < 128 ? ex->tex[q->st][slot] : 0;
-                tex_info(ex, q->r, h, q->img, q->r->separate, tex_gen, tex_ep, samp_sg, &tex_locked, &q->o[k].image);
+                if (!(slice && !q->img && tex_info_hit(ex, q->r, h, q->r->separate, &q->o[k].image)))
+                    tex_info(ex, q->r, h, q->img, q->r->separate, tex_gen, tex_ep, samp_sg, &tex_locked, &q->o[k].image);
                 q->o[k].w[2] = (uint32_t)q->o[k].image.imageLayout;   // zero the tail padding
             }
         }
-        vk_texture_unlock();
+        if (tex_locked) vk_texture_unlock();
         DP_MARK(DP_TEX);
     }
     tex_locked = 0;
@@ -3991,7 +4050,14 @@ static DrawCtx *ctx_new(void) {
     memset(&c->helper_frame, 0, sizeof c->helper_frame);
     c->frame = &c->helper_frame;
     c->GCL.records = 0;
+    c->slice = 0;
     return c;
+}
+
+// The inline uniform updates the replay thread has noted, for ubo_ptr (only the entries in use are copied).
+static void upd_take(DrawCtx *c) {
+    uint32_t n = draw_main.UPD.n < UPD_N ? draw_main.UPD.n : UPD_N;
+    memcpy(&c->UPD, &draw_main.UPD, offsetof(typeof(draw_main.UPD), u) + n * sizeof draw_main.UPD.u[0]);
 }
 
 // Replay thread, before helper k is handed a part (it is idle). The helper's context is made the first time; it takes
@@ -4000,21 +4066,69 @@ static DrawCtx *ctx_new(void) {
 struct DrawCtx *vk_exec_draw_helper_begin(int k) {
     if (!standins.ready) return NULL;
     if (!helper_ctx[k]) helper_ctx[k] = ctx_new();
-    uint32_t n = draw_main.UPD.n < UPD_N ? draw_main.UPD.n : UPD_N;
-    memcpy(&helper_ctx[k]->UPD, &draw_main.UPD, offsetof(typeof(draw_main.UPD), u) + n * sizeof draw_main.UPD.u[0]);
+    upd_take(helper_ctx[k]);
     return helper_ctx[k];
 }
 
 // Helper k's counters of its part: added to vk_exec_frame when the part is taken.
 VkExecFrame *vk_exec_draw_helper_frame(int k) { return &helper_ctx[k]->helper_frame; }
 
-// vk_exec_draw_shutdown: what each helper's context kept goes, as the replay thread's does. The helper threads are idle.
+// ---- the threads that record slices of parallel passes (vk_exec.c par_record)
+// Recording thread k (0 the submitting thread, 1 and up the workers) records its slices with the helpers' copy of the
+// translator and a context of its own, made from the replay thread's like a helper's. Each slice starts from a copy of
+// the replay state (vk_exec_draw_rebase forgets what the context derived from the one before). The submitting thread
+// makes and refreshes the contexts while no slice is recorded.
+#define SLICE_THREADS 16
+static DrawCtx *slice_ctx[SLICE_THREADS];
+
+// Submitting thread, at the start of a sliced pass: contexts for threads 0 to threads-1 (made the first time), each
+// with the inline uniform updates noted so far (no update op is collected into a sliced pass, so they hold for it).
+// The spare descriptor pools grow with the threads that record: each takes pools of its own for every submission.
+void vk_exec_draw_slices_begin(int threads) {
+    if (threads > SLICE_THREADS) threads = SLICE_THREADS;
+    int made = 0;
+    for (int k = 0; k < threads; k++) {
+        if (!slice_ctx[k]) {
+            DrawCtx *c = slice_ctx[k] = ctx_new();
+            c->slice = 1, made = 1;
+            memset(c->DP.ticks, 0, sizeof c->DP.ticks), c->DP.draws = c->DP.ops = 0;   // its own profile (dp_log)
+        }
+        upd_take(slice_ctx[k]);
+    }
+    if (!made) return;
+    int n = SPARE_POOLS + 8 * (threads > 1 ? threads - 1 : 0);
+    plat_mutex_lock(&spare_lock);
+    spare_pools = n > SPARE_POOLS_MAX ? SPARE_POOLS_MAX : n;
+    plat_mutex_unlock(&spare_lock);
+}
+
+struct DrawCtx *vk_exec_draw_slice_ctx(int k) { return k >= 0 && k < SLICE_THREADS ? slice_ctx[k] : NULL; }
+
+// Submitting thread, every slice of the pass recorded: the slices' frame counters go to vk_exec_frame.
+void vk_exec_draw_slices_end(int threads) {
+    for (int k = 0; k < threads && k < SLICE_THREADS; k++) {
+        if (!slice_ctx[k]) continue;
+        VkExecFrame *f = &slice_ctx[k]->helper_frame;
+        for (size_t j = 0; j < sizeof vk_exec_frame / sizeof(uint64_t); j++)
+            ((uint64_t *)&vk_exec_frame)[j] += ((const uint64_t *)f)[j];
+        memset(f, 0, sizeof *f);
+    }
+}
+
+// vk_exec_draw_shutdown: what each helper's and slice thread's context kept goes, as the replay thread's does. Those
+// threads are idle.
 static void helpers_release(VkCtx *c) {
     for (int k = 0; k < VK_SPEC_HELPERS; k++) {
         if (!helper_ctx[k]) continue;
         kept_release(helper_ctx[k], c);
         free(helper_ctx[k]);
         helper_ctx[k] = NULL;
+    }
+    for (int k = 0; k < SLICE_THREADS; k++) {
+        if (!slice_ctx[k]) continue;
+        kept_release(slice_ctx[k], c);
+        free(slice_ctx[k]);
+        slice_ctx[k] = NULL;
     }
 }
 #endif
