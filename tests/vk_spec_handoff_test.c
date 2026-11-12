@@ -4,7 +4,9 @@
 //
 // One process per configuration, because vk_spec_on reads its knobs once:
 //   vk_spec_handoff <TOTK_REPLAY_PAR or -> <TOTK_REPLAY_HELPERS or -> <helper threads expected, or cpu>
-// "cpu" expects the count vk_spec.h gives for the logical processors of this machine.
+// "cpu" expects vk_spec_helpers_for of the logical processors of this process, so the default goes through it.
+//   vk_spec_handoff counts
+// checks vk_spec_helpers_for itself, for every number of logical processors.
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -334,17 +336,33 @@ static void command_buffers(void) {
     CHECK(vk_spec_cb(0, 301) && npools == made + 2, "the pool of a context that is gone is forgotten");
 }
 
-static int by_processors(void) {   // vk_spec.h: five from 24 logical processors, four from 16, two from 12, one below
-    uint32_t cpus = plat_cpu_usable();
-    return cpus >= 24 ? 5 : cpus >= 16 ? 4 : cpus >= 12 ? 2 : 1;
+// vk_spec.h: five helpers from 24 logical processors, four from 16, three from 8, two from 4, one below. Each row is
+// a count on either side of a step, so moving a step by one processor fails a row.
+static int counts(void) {
+    static const struct { uint32_t cpus; int helpers; } rows[] = {
+        {0, 1}, {1, 1}, {2, 1}, {3, 1}, {4, 2}, {6, 2}, {7, 2}, {8, 3}, {12, 3}, {15, 3},
+        {16, 4}, {20, 4}, {23, 4}, {24, 5}, {32, 5}, {64, 5}, {UINT32_MAX, 5},
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++)
+        CHECK(vk_spec_helpers_for(rows[i].cpus) == rows[i].helpers, "%u logical processors: %d helpers, expected %d",
+              rows[i].cpus, vk_spec_helpers_for(rows[i].cpus), rows[i].helpers);
+    for (uint32_t cpus = 1; cpus < 128; cpus++) {   // more processors never give fewer helpers, nor more than fit
+        int k = vk_spec_helpers_for(cpus);
+        CHECK(k >= vk_spec_helpers_for(cpus - 1) && k >= 1 && k <= VK_SPEC_HELPERS, "%u logical processors: %d helpers",
+              cpus, k);
+    }
+    printf("vk_spec helper counts: %d checks, %d failed\n", checks, failures);
+    return failures != 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) return fprintf(stderr, "usage: %s <TOTK_REPLAY_PAR or -> <TOTK_REPLAY_HELPERS or -> <helpers or cpu>\n", argv[0]), 2;
+    if (argc == 2 && !strcmp(argv[1], "counts")) return counts();
+    if (argc != 4) return fprintf(stderr, "usage: %s <TOTK_REPLAY_PAR or -> <TOTK_REPLAY_HELPERS or -> <helpers or cpu>\n"
+                                          "       %s counts\n", argv[0], argv[0]), 2;
     setvbuf(stdout, NULL, _IONBF, 0);
     par_value = strcmp(argv[1], "-") ? argv[1] : NULL;
     helpers_value = strcmp(argv[2], "-") ? argv[2] : NULL;
-    int expected = !strcmp(argv[3], "cpu") ? by_processors() : atoi(argv[3]);
+    int expected = !strcmp(argv[3], "cpu") ? vk_spec_helpers_for(plat_cpu_usable()) : atoi(argv[3]);
     int ab = par_value && !strcmp(par_value, "ab"), check = par_value && !strcmp(par_value, "check");
     ctx.device = (VkDevice)(uintptr_t)0xD0D0, ctx.gfx_family = 3;
 

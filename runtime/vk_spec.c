@@ -83,15 +83,15 @@ static void spec_main(void *arg) {
     }
 }
 
-// How many helpers to start. Each one wants a processor to itself while a run is translated, next to the replay
-// thread, the recorder and the game's own threads.
+int vk_spec_helpers_for(uint32_t cpus) {
+    return cpus >= 24 ? 5 : cpus >= 16 ? 4 : cpus >= 8 ? 3 : cpus >= 4 ? 2 : 1;
+}
+
+// How many helpers to start: TOTK_REPLAY_HELPERS, or what the logical processors of the process give.
 static int helpers_wanted(void) {
     const char *e = cfg_get("TOTK_REPLAY_HELPERS");
     int n = e && *e ? atoi(e) : 0;
-    if (n <= 0) {
-        uint32_t cpus = plat_cpu_usable();
-        n = cpus >= 24 ? 5 : cpus >= 16 ? 4 : cpus >= 12 ? 2 : 1;
-    }
+    if (n <= 0) n = vk_spec_helpers_for(plat_cpu_usable());
     return n > VK_SPEC_HELPERS ? VK_SPEC_HELPERS : n;
 }
 
