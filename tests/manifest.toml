@@ -107,7 +107,6 @@ name = "excl-mt"
 tier = 1
 area = "cpu"
 cmd = ["{python}", "tests/excl_mt.py"]
-known_failure = "the exclusive monitor accepts a store after another thread changed the value and changed it back (ABA); fixed by pull request 217"
 needs = ["cc"]
 exclusive = true
 

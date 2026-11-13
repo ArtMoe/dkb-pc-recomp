@@ -2581,7 +2581,9 @@ static int tex_repeat_on(void) {
 // effect either while the epoch stays, which the key holds.
 static int tex_repeat(VkExec *ex, const VkPipeInfo *info, const TexPend *tp, int n) {
     DrawCtx *const dc = DC_OF(ex);
-    if (!tex_repeat_on()) return dc->TR.info = NULL, 0;
+    // Only with the texture memo in its normal mode: TOTK_TEX_MEMO=0 turns the lookups on, and the check mode (2)
+    // must compare every lookup.
+    if (!tex_repeat_on() || td_mode() != 1) return dc->TR.info = NULL, 0;
     uint64_t h[MAX_DESC];
     uint32_t nh = 0;
     for (int t = 0; t < n; t++) {
