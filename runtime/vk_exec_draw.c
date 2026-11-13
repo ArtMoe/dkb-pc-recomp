@@ -1998,7 +1998,7 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 // that samples it (a dispatch is outside any render pass), and the dispatch samples the twin. A copy cannot go inside
 // a render pass, so a draw that samples such an image (and does not render into it) ends its pass first, copies, and
 // opens the pass again (twin_prepare); the pass's later draws sample the same twin (Twin.pass). Cost: one pass restart
-// per pass that samples such an image. A helper's draws that would need a twin are handed back (vk_spec_fail in twin_prepare) and a slice's keep the colour image. Design: Savage Wind Recomp runtime/nvn/vulkan/exec.c depth_twin_update
+// per pass that samples such an image. A helper's draws that would need a twin are handed back (vk_spec_fail in twin_prepare); a slice's keep the colour image once and ban the pass's targets from slicing (vk_exec_par_ban). Design: Savage Wind Recomp runtime/nvn/vulkan/exec.c depth_twin_update
 // (https://github.com/Revivedx/SavageWindRecomp, MIT); the code is ours. TOTK_DEPTH_TWIN=0: off.
 #define TWINS 8
 #define TWIN_MAX (64u << 20)   // bytes of the largest twin
@@ -2192,7 +2192,7 @@ static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage,
 // have none for this pass (and are not its attachments) are copied between ending the pass and opening it again.
 static void twin_prepare(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     DrawCtx *const dc = DC_OF(ex);
-    if (!ex->in_pass || IN_SLICE(dc) || (!twin_df(VK_FORMAT_R32_SFLOAT) && !twin_df(VK_FORMAT_R16_UNORM))) return;
+    if (!ex->in_pass || (!twin_df(VK_FORMAT_R32_SFLOAT) && !twin_df(VK_FORMAT_R16_UNORM))) return;
     const GfxShader *const sh[2] = {fs, vs};
     uint64_t ids[TWINS];
     VkImage seen[TWINS];
@@ -2220,13 +2220,16 @@ static void twin_prepare(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
                     const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                     skip |= !(i < 8 && i >= ex->pass_ncolor) && t->image == img->image;
                 }
-                Twin *t = twin_find(img, df, img->layers ? img->layers : 1);
+                Twin *t = IN_SLICE(dc) ? NULL : twin_find(img, df, img->layers ? img->layers : 1);   // twins[] is the replay thread's
                 if (skip || (t && t->pass == ex->pass_serial)) continue;
                 seen[n] = img->image, ids[n++] = h;
             }
         }
     }
     if (locked) vk_texture_unlock();
+    // A slice cannot end the pass: its draw keeps the colour image, and the ban keeps the pass's targets out of
+    // later slices, so the replay thread makes the twin from the next such pass on.
+    if (n && IN_SLICE(dc)) { vk_exec_par_ban(); return; }
     if (!n || (IS_HELPER(dc) && vk_spec_fail(VK_SPEC_FEEDBACK))) return;   // the replay thread's pass would restart
     uint32_t old = ex->pass_serial;
     vk_exec_pass_end(ex);

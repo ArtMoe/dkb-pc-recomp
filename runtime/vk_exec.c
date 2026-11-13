@@ -743,7 +743,7 @@ void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
-    if (par_slice) { par_hazard = 1; return; }   // a slice cannot open a pass (parallel passes)
+    if (par_slice) { vk_exec_par_hazard(); return; }   // a slice cannot open a pass (parallel passes)
     resolve_rt(ex);
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
     VkImage want[9];
@@ -795,7 +795,7 @@ void vk_exec_pass_begin(VkExec *ex) {
 
 void vk_exec_pass_end(VkExec *ex) {
     if (!ex->in_pass) return;
-    if (par_slice) { par_hazard = 1; return; }   // a slice cannot end the pass (parallel passes)
+    if (par_slice) { vk_exec_par_hazard(); return; }   // a slice cannot end the pass (parallel passes)
     // The draws this pass's targets take, for the next time (par_start). A pass with fewer draws lowers the count by an
     // eighth only: a big pass comes in several pieces when a counter op ends a collection, and its targets may also
     // take a small pass in the same frame.
@@ -837,7 +837,7 @@ void vk_exec_pass_end(VkExec *ex) {
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
     VkExec *ex = &X;
     *reopen = 0;
-    if (par_slice) { par_hazard = 1; return VK_NULL_HANDLE; }   // not inside a slice (parallel passes)
+    if (par_slice) { vk_exec_par_hazard(); return VK_NULL_HANDLE; }   // not inside a slice (parallel passes)
     if (!x_here || !ex->cb) return VK_NULL_HANDLE;
     *reopen = ex->in_pass;
     vk_exec_barrier(ex);   // ends the pass; feedback-layout targets go back to GENERAL
@@ -1782,7 +1782,8 @@ static void par_log(void) {
 // uniform snapshot copy, which makes later bindings depend on the draw order (vk_exec_par_order_hazard).
 static int par_collecting(void) { return PC.on; }
 void vk_exec_par_hazard(void) { if (!par_hazard) par_hazard = 1; }
-void vk_exec_par_order_hazard(void) { par_hazard = 2; }
+void vk_exec_par_order_hazard(void) { if (par_hazard < 2) par_hazard = 2; }
+void vk_exec_par_ban(void) { par_hazard = 3; }
 
 static void par_done(void *arg) {   // completion thread: the secondaries of a finished submission can be reused
     ParDone *d = arg;
@@ -2206,11 +2207,13 @@ static void par_flush(VkExec *ex) {
         // A feedback target learned inside a slice is one: its pass restart was dropped, and the next pass attaches
         // the target in the feedback layout, so a few hazards are expected; a set that keeps having them is left alone.
         par_no[3]++;
-        if (hazard == 2 && e->banned < PAR_BAN_AFTER) {
-            // A draw of a slice stored into a range a uniform snapshot copy covers: which later bindings take the copy
-            // follows the draw order, which slices recorded at once do not keep.
+        if (hazard >= 2 && e->banned < PAR_BAN_AFTER) {
+            // 2: a draw of a slice stored into a range a uniform snapshot copy covers: which later bindings take the copy
+            // follows the draw order, which slices recorded at once do not keep. 3: a draw samples an image that needs a
+            // depth twin, which only the primary can copy (it ends the pass), and will on every frame.
             e->banned = PAR_BAN_AFTER;
-            rt_log("vk: a draw of a sliced pass stores over a uniform snapshot copy: those targets are not sliced again");
+            rt_log(hazard == 2 ? "vk: a draw of a sliced pass stores over a uniform snapshot copy: those targets are not sliced again"
+                               : "vk: a draw of a sliced pass samples an image that needs a depth twin: those targets are not sliced again");
         } else if (e->banned < 255 && ++e->banned == PAR_BAN_AFTER)
             rt_log("vk: a sliced pass needed a pass or barrier change inside a slice %d times: those targets are not sliced again",
                    PAR_BAN_AFTER);
