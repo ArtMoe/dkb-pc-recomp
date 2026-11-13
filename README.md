@@ -29,11 +29,13 @@ the Glacier layer, Snow World (Layer 500) and the Tempest layer. The current rel
 builds the game from your own dump: [docs/installer.md](docs/installer.md). What still fails:
 
 - Device lost on NVIDIA in the Glacier rock ride ([#196](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/196))
-  and in Layer 500 ([#197](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/197)).
+  and in Layer 500 ([#197](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/197)): one bug, with the same draw in
+  flight in both. Fast-linked pipelines and the pipeline cache are ruled out; a recorded crashing run is being replayed.
 - Device lost on AMD cards with AMD's Windows driver. On 0.3.0, `vk_recorder = 0` in `dkb.ini` stopped it for three
-  players (#84, #155, #142), and it is the default on `bananza` since d161f88. Other AMD reports wait for a retest
-  (#124, #176, #193). GPU hangs under RADV on Linux are still open (#99, #122, #198, #204).
+  players (#84, #155, #142), then #124 and #123, and it is the default on `bananza` since d161f88. Other AMD reports
+  wait for a retest (#176, #193, #206). GPU hangs under RADV on Linux are still open (#99, #122, #198, #204).
 - Guest crashes in later areas (#148, #157, #136, #218, #229).
+- Missing effects in the Tempest layer (falling golden hail, tornadoes: #221, #183).
 - Heavy scenes below 60 fps (#141, #156, #194, #207). On `bananza` (70c1b4a) new defaults raise our heavy test scene
   from about 53 to 58 fps and halve the frames over 25 ms; a stall of about 0.45 s on area loads is left. See
   [docs/dkb-lowend.md](docs/dkb-lowend.md).
