@@ -37,6 +37,8 @@ builds the game from your own dump: [docs/installer.md](docs/installer.md). What
 - Heavy scenes below 60 fps (#141, #156, #194, #207). On `bananza` (70c1b4a) new defaults raise our heavy test scene
   from about 53 to 58 fps and halve the frames over 25 ms; a stall of about 0.45 s on area loads is left. See
   [docs/dkb-lowend.md](docs/dkb-lowend.md).
+- A soft 3D picture: the game's dynamic resolution draws the scene at 2/3 of the output (1280x720 at 1080p, #210).
+  On `bananza` (9190e6b), `scene_res = full` draws it at the output size.
 
 Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 13 November 2026.
 
