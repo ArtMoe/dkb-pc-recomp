@@ -34,7 +34,9 @@ builds the game from your own dump: [docs/installer.md](docs/installer.md). What
   players (#84, #155, #142), and it is the default on `bananza` since d161f88. Other AMD reports wait for a retest
   (#124, #176, #193). GPU hangs under RADV on Linux are still open (#99, #122, #198, #204).
 - Guest crashes in later areas (#148, #157, #136, #218, #229).
-- Heavy scenes below 60 fps (#141, #156, #194, #207); see [docs/dkb-lowend.md](docs/dkb-lowend.md).
+- Heavy scenes below 60 fps (#141, #156, #194, #207). On `bananza` (70c1b4a) new defaults raise our heavy test scene
+  from about 53 to 58 fps and halve the frames over 25 ms; a stall of about 0.45 s on area loads is left. See
+  [docs/dkb-lowend.md](docs/dkb-lowend.md).
 
 Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 13 November 2026.
 
@@ -47,7 +49,7 @@ Progress, day by day: [docs/devlog.md](docs/devlog.md). Last updated: 13 Novembe
 | F4 Vulkan | ✅ | The title screen and the tutorial's 3D scene render. |
 | F5 Playable | ✅ | Controller, guide movies (VP9), push constants, installer and releases 0.1.0 to 0.3.0. |
 | F6 Stability | 🚧 | Device lost on NVIDIA and AMD, RADV hangs and guest crashes in later areas. |
-| F7 Performance | 🚧 | A heavy scene runs at 50 to 54 fps with a stall of about 0.9 s. |
+| F7 Performance | 🚧 | A heavy scene runs at about 58 fps on `bananza`, with a stall of about 0.45 s on area loads. |
 | F8 Image | 🚧 | Missing effects, some textures and terrain details. |
 | F9 Platforms | 🚧 | Linux and macOS preview packages, RecompLauncher, audio and DLC. |
 
