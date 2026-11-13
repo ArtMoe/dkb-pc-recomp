@@ -118,7 +118,7 @@ Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
 - [ ] Device lost on NVIDIA in later layers: the Glacier rock ride (#196) and Layer 500 (#197).
 - [ ] Guest crashes in later areas (#148 #157 #136 #218 #229), each with its log.
 - [ ] Device lost on AMD (#3 #84 #124 #142 #155 #176 #193) and GPU hangs under RADV (#99 #122 #198 #204).
-- [ ] Validation errors from a depth-compare sampler on an R32_SFLOAT view used by a draw.
+- [x] Validation errors from a depth-compare sampler on an R32_SFLOAT view used by a draw: draws now sample a depth twin, as compute passes did (2201ec6). The first level runs with 0 validation errors.
 
 ## F7 — Performance (in progress)
 
