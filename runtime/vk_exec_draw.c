@@ -627,6 +627,9 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
     if (vmaFlushAllocation(vk_ctx()->vma, chunk->alloc, source_offset, sizeof record) != VK_SUCCESS)
         rt_fatal("vk: flushing indirect-reset values failed");
     int ordered = reset_targets_overlap(pointers, list.count);
+    VkBuffer dst = VK_NULL_HANDLE;
+    VkBufferCopy regions[128];
+    uint32_t nregions = 0;
     vk_exec_barrier(ex);   // the copies follow every earlier access to the records
     for (uint32_t i = 0; i < list.count; i++) {
         uint64_t addr = pointers[i];
@@ -639,12 +642,29 @@ int vk_exec_reset_indirect(VkExec *ex, uint64_t list_addr, uint32_t descriptor_b
         VK_MEM_USE(span);
         if (ordered) vk_exec_barrier(ex);   // preserves the input order of duplicate or overlapping target ranges
         VkBufferCopy copy = {source_offset, span.offset, sizeof record};
-        vkCmdCopyBuffer(ex->cb, source, span.buffer, 1, &copy);
-        ex->recorded++;
+        if (!ordered) {
+            // Do not reorder targets. Within one command the destination ranges must be disjoint,
+            // including when different guest addresses resolve to the same Vulkan buffer.
+            if (nregions && (dst != span.buffer || nregions == sizeof regions / sizeof regions[0] ||
+                span.offset < regions[nregions - 1].dstOffset + sizeof record)) {
+                vkCmdCopyBuffer(ex->cb, source, dst, nregions, regions);
+                ex->recorded++;
+                nregions = 0;
+            }
+            dst = span.buffer;
+            regions[nregions++] = copy;
+        } else {
+            vkCmdCopyBuffer(ex->cb, source, span.buffer, 1, &copy);
+            ex->recorded++;
+        }
         vk_mem_gpu_wrote(&span, sizeof record);
         vk_usnap_drop(addr, sizeof record);
         vk_mem_count(span.cls, VK_MUSE_GPU_WRITE, sizeof record);
         note_written(ex, addr, sizeof record);
+    }
+    if (nregions) {
+        vkCmdCopyBuffer(ex->cb, source, dst, nregions, regions);
+        ex->recorded++;
     }
     free(pointers);
     vk_exec_barrier(ex);   // subsequent shader accesses and indirect reads see every completed record
