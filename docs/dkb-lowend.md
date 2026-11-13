@@ -79,4 +79,15 @@ Build 89645fc (warm cache):
 
 - A cold shader cache cost about 5 fps in the first run.
 - A stall of about 0.9 s around frame 1775, almost all of it replay, shows in every run.
+- Cause of that stall: the first frame of the new area imports guest memory pools on their first GPU use
+  (`TOTK_POOL_LAZY`, `vk_memory.c` `lazy_import`). A sampling profile of the frame (`TOTK_PROFILE_SLOW`) put about 70%
+  of the render thread in `import_pool` (`vkAllocateMemory` of host memory); 673 pools were imported between frames 600
+  and 1800, about 960 ms in all, 1.4 ms each, most of them in that frame. The GPU uses only two pool kinds: of 3325
+  imported pools at frame 3600, 430 of 1651 `CPU_UNCACHED|GPU_CACHED` and 638 of 1076 `CPU_CACHED|GPU_CACHED` were
+  resolved, and almost none of the other kinds.
+- Tried and dropped: a background thread that imported every lazy pool older than 2 s. The worst frame fell from
+  about 750 ms to 350 ms, but the import time rose from 1.5 s to 5.7 s, held the pool lock the guest's threads wait on,
+  and the run got worse overall: 47.1 and 49.1 fps against 52.7 and 53.6, a 1% low of 9.4 and 10.6 against 25.6 and
+  27.8, and 29 to 32 frames over 100 ms against 4 to 5. Fewer imports, not earlier ones, is the direction left: one
+  import covering many small neighbouring pools.
 - Run-to-run noise is about 2 fps, and 3 in the 1% low.
