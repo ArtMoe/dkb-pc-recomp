@@ -493,6 +493,7 @@ void vk_dlss_release(void);   // device idle, before it goes away
 // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 // once the GPU reached it and the completion thread ran its side effects. Guest or host threads.
 void vk_sync_start(void);                  // vk_init (fatal without a device) and the completion thread; idempotent
+uint64_t vk_sync_submit_guest(const uint64_t *handles, int n, uint64_t submitted_ticks);
 uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t submitted_ticks); // immutable front-end entry tick
 uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the next queued submission signals
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
