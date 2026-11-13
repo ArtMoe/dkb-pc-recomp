@@ -188,6 +188,13 @@ and `DKB_HUD_POSITION=edges|centered`. Overrides lock the corresponding F1 contr
 otherwise choices are saved in `dkb.ini` (an existing `totk.ini` is copied to it on the first run; `TOTK_*` environment variables still work, and `DKB_*` ones win over them). Turning Ultrawide off allows the 16:9 presets
 and skips the wide overlay. Invalid sizes fall back to the original 2880x1620 dimensions.
 
+`scene_res` (`DKB_SCENE_RES`, `auto|full`, read at start, F1 "3D scene resolution") controls the size of the 3D scene.
+`auto` keeps the game's own dynamic resolution, which settles at a ratio of 1.5 under emulation, so the scene is
+two thirds of the render resolution on each side (1280x720 at 1920x1080) and is then upscaled. `full` (or a ratio from
+1.0 to 3.0) patches the controller (main 3c12b4 on 1.0.0) to store that ratio: the scene is drawn at the whole render
+resolution (more GPU cost, the render-target pool grows by (1.5/ratio)^2) and the game's upscaler, and so DLSS, is not
+dispatched. `dkb.log` says `Bananza resolution: 3D scene ratio ...`.
+
 5120x1440 (32:9) and 3840x2160 used to fail during render-resource creation because the game's
 render-target pool is a fixed 200 MiB; a patch grows it with the output size. Both now run on 1.0.0
 on an RTX 5060 Ti (short runs); 3840x2160 also runs on update 3.2.0 (pools of 356 MiB, 90 s at 60 fps).

@@ -44,7 +44,7 @@ static const char *const known[] = {
     "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PATCH_OUTPUT", "PATCH_SCENE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POOL_FINI_WAIT", "POOL_LAZY",
     "PRESENT_HOLD", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_REPLAY", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_BEGIN", "REC_END", "REC_SUBMIT", "REEXEC",
-    "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS",
+    "RENDER_SCALE", "SCENE_RES", "REPLAY_ASYNC", "REPLAY_HELPERS", "REPLAY_PAR", "REPLAY_THREADS",
     "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SMAA", "SPARSE_MIRROR_COPY", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "SVC_SLOW", "SWKBD_ANSWER",
@@ -58,7 +58,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_MODE", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
-    {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
+    {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"}, {"SCENE_RES", "display"},
     {"ULTRAWIDE", "display"}, {"HUD_POSITION", "display"},
     {"SHARPNESS", "display"}, {"SMAA", "display"}, {"FRAME_GEN", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
@@ -105,6 +105,7 @@ static const CfgMeta metas[] = {
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|59|67|75|77|100|125|150|200", RESTART},
+    {"SCENE_RES", "auto", "auto|full", RESTART},   // Bananza only (dkb_wide.c)
     {"UPSCALER", "fsr", "fsr|bilinear|dlss", LIVE}, {"SHARPNESS", "80", "0..100", LIVE}, {"SMAA", "off", "off|low|medium|high", LIVE},
     {"FRAME_GEN", "off", "off|2x", LIVE},   // vk_framegen.c, experimental
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},

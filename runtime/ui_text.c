@@ -80,6 +80,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (83 %)",
+    [UI_MENU_SCENE_RES] = "3D scene resolution",
+    [UI_MENU_SCENE_RES_DESC] = "Auto lets the game scale its 3D scene by load, usually to two thirds of the render resolution "
+                               "on each side, then upscale it. Full draws the 3D scene at the whole render resolution: a "
+                               "sharper picture at a higher GPU cost, and the upscaler and DLSS are not used. Applies at the next start.",
+    [UI_MENU_SCENE_RES_AUTO] = "Auto (game)", [UI_MENU_SCENE_RES_FULL] = "Full",
     [UI_MENU_UPSCALER] = "Upscaling method",
     [UI_MENU_UPSCALER_DESC] = "This applies when the game image is smaller than the area it fills on your screen or in your window. "
                               "AMD FSR 1 can keep edges sharper than Bilinear.",
@@ -416,6 +421,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (83 %)",
+    [UI_MENU_SCENE_RES] = "Разрешение 3D-сцены",
+    [UI_MENU_SCENE_RES_DESC] = "Авто: игра сама меняет размер 3D-сцены по нагрузке, обычно до двух третей разрешения рендеринга "
+                               "по каждой стороне, и затем растягивает её. Полное: 3D-сцена рисуется в полном разрешении "
+                               "рендеринга, картинка чётче, но нагрузка на GPU выше; апскейлер и DLSS не работают. Действует после перезапуска.",
+    [UI_MENU_SCENE_RES_AUTO] = "Авто (игра)", [UI_MENU_SCENE_RES_FULL] = "Полное",
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
     [UI_MENU_UPSCALER_DESC] = "Этот параметр действует, когда изображение игры меньше области вывода на экране или в окне. "
                               "AMD FSR 1 может сохранять края более чёткими, чем билинейное масштабирование.",

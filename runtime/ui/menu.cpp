@@ -717,6 +717,10 @@ static void row_window_mode(void) {
 
 static void rows_render_options(const MenuTarget &target) {
     if (rt_game_version) row_render_scale();
+    else if (rt_patch_set("dkbscene") >= 0) {
+        static const UiTextId scene[] = {UI_MENU_SCENE_RES_AUTO, UI_MENU_SCENE_RES_FULL};
+        opt_choice("TOTK_SCENE_RES", UI_MENU_SCENE_RES, scene, 2, UI_MENU_SCENE_RES_DESC);
+    }
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     int fitted[4];
     gfx_fit_rect(target.image_w, target.image_h, target.width, target.height, fitted);
