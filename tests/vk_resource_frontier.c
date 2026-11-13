@@ -1,6 +1,8 @@
 // CPU fixture for vk_resource_frontier_test.py. Production functions/types are inserted at the markers below.
 // Every driver entry is redirected to an explicitly synthetic adapter. No window, loader, Vulkan device or GPU runs.
 #include <windows.h>
+
+void vk_texture_new_submit(void) {}
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
