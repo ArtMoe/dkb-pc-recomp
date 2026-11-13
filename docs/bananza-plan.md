@@ -124,8 +124,8 @@ Issues: [#2] [#3] [#4] [#5] [#7] [#8] [#9]; the whole list is the
 
 - [ ] The stall of about 0.9 s at an area load (almost all of it replay).
 - [ ] Replay cost per draw.
-- [ ] `TOTK_REPLAY_THREADS` default chosen by core count.
-- [ ] `TOTK_HEAP_LAZY` on by default on Windows.
+- [x] `TOTK_REPLAY_THREADS` default chosen by core count (4 from 8 logical processors).
+- [x] `TOTK_HEAP_LAZY` on by default on Windows.
 - [ ] Frame rates above 60 (#113 #118 #137 #201).
 
 ## F8 — Image (in progress)

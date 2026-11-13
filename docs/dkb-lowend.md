@@ -90,4 +90,18 @@ Build 89645fc (warm cache):
   and the run got worse overall: 47.1 and 49.1 fps against 52.7 and 53.6, a 1% low of 9.4 and 10.6 against 25.6 and
   27.8, and 29 to 32 frames over 100 ms against 4 to 5. Fewer imports, not earlier ones, is the direction left: one
   import covering many small neighbouring pools.
+
+Defaults chosen from these runs (13 November, build of bananza with the pre-import dropped, warm cache, two runs each):
+
+| Setting | fps | 1% low | Frames over 25 ms | Worst frame |
+| --- | --- | --- | --- | --- |
+| old defaults | 52.7 and 53.6 | 25.6 and 27.0 | 177 and 226 | about 760 ms |
+| `TOTK_REPLAY_THREADS=4` | 57.0 and 57.2 | 28.8 and 29.0 | 63 and 77 | about 775 ms |
+| `TOTK_HEAP_LAZY=1` | 54.3 and 54.3 | 28.2 and 28.4 | 168 and 193 | about 473 ms |
+| new defaults (both) | 57.9 and 57.6 | 29.6 and 29.6 | 62 and 65 | about 456 ms |
+| 8 logical processors, old defaults | 49.8 and 50.5 | 23.7 and 26.3 | 371 and 389 | |
+| 8 logical processors, `TOTK_REPLAY_THREADS=4` | 54.1 and 54.3 | 26.1 and 23.5 | 165 and 185 | |
+
+So `TOTK_REPLAY_THREADS` defaults to 4 from 8 logical processors (not on AMD, not measured there) and `TOTK_HEAP_LAZY`
+to 1 on Windows.
 - Run-to-run noise is about 2 fps, and 3 in the 1% low.

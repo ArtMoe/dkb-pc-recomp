@@ -1,6 +1,6 @@
 # Recording the replay on several threads
 
-Status: in bananza since pull request 195 (`TOTK_REPLAY_THREADS`, off by default): big passes are recorded in slices
+Status: in bananza since pull request 195 (`TOTK_REPLAY_THREADS`; since 13 November 4 threads by default from 8 logical processors, except on AMD): big passes are recorded in slices
 by up to 16 threads, each with a draw context of its own (pull request 190). The sections below follow the work in the
 order it was done; the plan at the end is the first one and is kept for the record.
 

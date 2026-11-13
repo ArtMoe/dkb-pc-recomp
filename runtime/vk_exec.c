@@ -58,6 +58,7 @@ enum { PAR_WHY_UNSEEN, PAR_WHY_NONE, PAR_WHY_NEW, PAR_WHY_SMALL, PAR_WHY_BANNED,
 typedef struct { uint64_t sig; uint32_t draws; uint8_t banned; } ParHist;
 static ParHist par_hist[PAR_HIST];
 static int par_mode = -1;                       // DKB_REPLAY_THREADS: 0 off, else the threads (stage A: 1)
+static int par_threads(void);
 static uint64_t par_t_collect, par_t_own, par_t_wait, par_t_exec;   // ns on the submitting thread (TOTK_TRACE=perf)
 static uint64_t par_t0;
 static volatile int64_t par_rec[2][3];          // slices recorded by the submitting thread [0] and workers [1]: count, draws, ns
@@ -1022,8 +1023,7 @@ static void maybe_split(VkExec *ex) {
         // With the replay recorded on several threads (TOTK_REPLAY_THREADS above 1) the default is 300 us: in the
         // hills region on eight threads, parts of at least 300 us gave 47-49 fps against 43-47 with 1000 us and 45-47
         // with none, since the GPU starts sooner on the big passes the game waits for within the frame.
-        const char *threads = cfg_get("TOTK_REPLAY_THREADS");
-        if (!cfg_is_set("TOTK_SPLIT_US") && threads && atoi(threads) > 1) us = 300;
+        if (!cfg_is_set("TOTK_SPLIT_US") && par_threads() > 1) us = 300;
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
                us > 0 ? us : 0, split_n ? "" : " (off)");
@@ -1847,14 +1847,19 @@ static void par_wake_workers(void);
 static int par_nworkers;
 
 // At a draw outside a pass: 1 when the pass it opens is sliced (the pass is then open, with secondary contents).
-// TOTK_REPLAY_THREADS (0: off), read once.
+// TOTK_REPLAY_THREADS (0: off), read once. Unset, it is 4 when the process may run on 8 or more logical processors and
+// 0 below that: in the layer -101 scene (RTX 5060 Ti, 1920x1080, 60 fps limit) 4 threads gave 57.0 and 57.2 fps and
+// 63 to 77 frames over 25 ms a minute, against 52.7 and 53.6 fps and 177 to 226 frames without (docs/dkb-lowend.md).
+// Not on AMD: secondary command buffers recorded on several threads were measured on NVIDIA only, and AMD's driver
+// already lost the device with the recorder thread (vk_rec.c rec_begin).
 static int par_threads(void) {
     if (par_mode < 0) {
         const char *e = cfg_get("TOTK_REPLAY_THREADS");
-        par_mode = e && *e ? atoi(e) : 0;
+        par_mode = e && *e ? atoi(e) : !vk_caps.amd && plat_cpu_usable() >= 8 ? 4 : 0;
         if (par_mode < 0) par_mode = 0;
         if (par_mode) rt_log("vk: passes of %d or more draws are recorded in slices of up to %d draws into secondary command buffers "
-                             "(TOTK_REPLAY_THREADS=%d: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode);
+                             "(TOTK_REPLAY_THREADS=%d%s: recorded by that many threads)", PAR_MIN_DRAWS, PAR_SLICE_DRAWS, par_mode,
+                             e && *e ? "" : ", the default");
     }
     return par_mode;
 }
@@ -2306,7 +2311,7 @@ static int record_impl(VkCommandBuffer cb, const uint64_t *handles, int n, uint6
         int par = vk_spec_on() && !vk_mem_shadow_on() && !par_threads();
         if (vk_spec_on() && par_mode > 0) {
             static int told;
-            if (!told++) rt_log("vk: TOTK_REPLAY_THREADS is set: the helper threads of TOTK_REPLAY_PAR take no run");
+            if (!told++) rt_log("vk: passes are recorded on several threads (TOTK_REPLAY_THREADS): the helper threads of TOTK_REPLAY_PAR take no run");
         }
         P.rec += par;
         for (int i = 0; i < n; i++) {
