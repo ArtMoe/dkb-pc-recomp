@@ -30,8 +30,9 @@ builds the game from your own dump: [docs/installer.md](docs/installer.md). What
 
 - Device lost on NVIDIA in the Glacier rock ride ([#196](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/196))
   and in Layer 500 ([#197](https://github.com/Lucas-blip-png/dkb-pc-recomp/issues/197)).
-- Device lost on many AMD cards (#3, #84, #124, #142, #155, #176, #193) and GPU hangs under RADV (#99, #122, #198,
-  #204).
+- Device lost on AMD cards with AMD's Windows driver. On 0.3.0, `vk_recorder = 0` in `dkb.ini` stopped it for three
+  players (#84, #155, #142), and it is the default on `bananza` since d161f88. Other AMD reports wait for a retest
+  (#124, #176, #193). GPU hangs under RADV on Linux are still open (#99, #122, #198, #204).
 - Guest crashes in later areas (#148, #157, #136, #218, #229).
 - Heavy scenes below 60 fps (#141, #156, #194, #207); see [docs/dkb-lowend.md](docs/dkb-lowend.md).
 
