@@ -270,7 +270,7 @@ int main(void) {
 }
 '''
     return '\n'.join((prelude.replace('@CTX@', draw_context(draw)), knobs, adapters,
-                      'static void descriptor_state(VkExec *ex);', *pieces, selection, tests))
+                      'static void descriptor_state(VkExec *ex);', 'static uint32_t twin_pass;', *pieces, selection, tests))
 
 
 def main():
