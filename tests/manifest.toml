@@ -752,3 +752,9 @@ name = "xlate-storage-guard"
 tier = 3
 area = "shaders"
 cmd = ["{python}", "tests/xlate_storage_guard_test.py"]
+
+[[test]]
+name = "runtime-sources"
+tier = 0
+area = "tools"
+cmd = ["{python}", "tests/runtime_sources_test.py"]
