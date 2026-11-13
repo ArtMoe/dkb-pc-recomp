@@ -55,3 +55,28 @@ Same route, 60 s runs, one knob changed from the defaults at a time. Repeated ru
 
 This route is light, so these are not yet reasons to change a default. A low-end profile would turn the recorder off at
 2 logical processors once a heavy scene confirms it.
+
+## Heavy scene: layer -101
+
+A player's recording in layer -101 on an RTX 5060 Ti at 1920x1080 with a 60 fps limit, measured on 13 November over
+the first minute with a warm shader cache. Each setting ran once or twice; two values are the two runs.
+
+0.3.0 build:
+
+| Setting | fps | 1% low | Frames over 25 ms |
+| --- | --- | --- | --- |
+| defaults | 50.5 and 49.8 | 21.4 and 23.1 | 346 and 370 |
+| `TOTK_REPLAY_PAR=1` | 51.3 | 23.4 | 314 |
+| `TOTK_REPLAY_THREADS=4` | 54.3 | 25.6 | 146 |
+| `TOTK_REPLAY_THREADS=8` | 53.1 | 23.1 | 198 |
+
+Build 89645fc (warm cache):
+
+| Setting | fps | Frames over 25 ms |
+| --- | --- | --- |
+| defaults | 50.3 and 51.6 | not recorded |
+| `TOTK_REPLAY_THREADS=4` | 54.2 and 53.6 | 188 and 181 |
+
+- A cold shader cache cost about 5 fps in the first run.
+- A stall of about 0.9 s around frame 1775, almost all of it replay, shows in every run.
+- Run-to-run noise is about 2 fps, and 3 in the 1% low.
