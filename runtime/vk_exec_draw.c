@@ -113,6 +113,7 @@
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
+#define QUAD_MAX 65536u   // quads the shared index list covers (1.5 MiB); a longer draw builds its own list
 #define SUPPORT_BYTES GFX_SUPPORT_BYTES
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
@@ -290,7 +291,7 @@ typedef struct DrawCtx {
     struct { uint64_t context, h, tok; uint32_t gen; SubRange r; } FM[FM_N];
     struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM;
     struct { int on, valid; VkPipeState s; const VkPipeInfo *info; } PM;
-    struct { int on, active; uint64_t t, ticks[DP_N], draws, ops, win_tk, win_ns; } DP;
+    struct { int on, active; uint64_t t, ticks[DP_N], draws, ops, win_tk, win_ns, op_n[OP_COUNT_], op_tk[OP_COUNT_]; } DP;
     uint32_t c0_dim[3], c0_binst;   // the dispatch size and base instance of the draw or dispatch being bound
     uint32_t ssbo_serial[6];          // bumped per stage by OP_BIND_SSBO, for c0_info's fast graphics check
     const GfxShader *native_gs_vs, *native_gs_fs;   // the draw's stages, set before its geometry lookup
@@ -691,6 +692,8 @@ typedef struct {
     VkBuffer zbuf;
     VmaAllocation zalloc;
     VkBufferView zview;
+    VkBuffer qbuf;   // the index list of QUAD_MAX quads from vertex 0: {0,1,2,0,2,3} + 4i, shared by every quad draw
+    VmaAllocation qalloc;
     VkSampler samp, samp_shadow;
     struct { VkImage image; VmaAllocation alloc; VkImageView view, sview; } img[DV_COUNT];
 } Standins;
@@ -800,6 +803,13 @@ static void dummies_init(void) {
     VmaAllocationInfo info;
     if (vmaCreateBuffer(c->vma, &bi, &ai, &standins.zbuf, &standins.zalloc, &info) != VK_SUCCESS) rt_fatal("vk: zero buffer failed");
     memset(info.pMappedData, 0, ZERO_BYTES);
+    bi.size = sizeof(uint32_t) * 6 * QUAD_MAX, bi.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (vmaCreateBuffer(c->vma, &bi, &ai, &standins.qbuf, &standins.qalloc, &info) != VK_SUCCESS) rt_fatal("vk: quad index buffer failed");
+    for (uint32_t i = 0; i < QUAD_MAX; i++)
+        for (int j = 0; j < 6; j++) ((uint32_t *)info.pMappedData)[6 * i + j] = 4 * i + (uint32_t[6]){0, 1, 2, 0, 2, 3}[j];
+    // Host-cached memory need not be coherent: make both host writes visible to the device (no-op when coherent).
+    vmaFlushAllocation(c->vma, standins.zalloc, 0, VK_WHOLE_SIZE);
+    vmaFlushAllocation(c->vma, standins.qalloc, 0, VK_WHOLE_SIZE);
     VkBufferViewCreateInfo bv = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = standins.zbuf,
                                  .format = VK_FORMAT_R32G32B32A32_SFLOAT, .range = ZERO_BYTES};
     if (vkCreateBufferView(c->device, &bv, NULL, &standins.zview) != VK_SUCCESS) rt_fatal("vk: zero buffer view failed");
@@ -854,6 +864,7 @@ void vk_exec_draw_shutdown(void) {
     if (standins.ready) {
         vkDestroyBufferView(c->device, standins.zview, NULL);
         vmaDestroyBuffer(c->vma, standins.zbuf, standins.zalloc);
+        vmaDestroyBuffer(c->vma, standins.qbuf, standins.qalloc);
     }
     memset(&standins, 0, sizeof standins);
 }
@@ -1361,7 +1372,7 @@ static int dp_on(DrawCtx *dc) {
 
 static void dp_log(DrawCtx *dc) {
     uint64_t tk = dp_now(), ns = kern_now_ns();
-    if (!dc->DP.win_tk) { dc->DP.win_tk = tk, dc->DP.win_ns = ns; memset(dc->DP.ticks, 0, sizeof dc->DP.ticks); dc->DP.draws = dc->DP.ops = 0; return; }
+    if (!dc->DP.win_tk) { dc->DP.win_tk = tk, dc->DP.win_ns = ns; memset(dc->DP.ticks, 0, sizeof dc->DP.ticks), memset(dc->DP.op_n, 0, sizeof dc->DP.op_n), memset(dc->DP.op_tk, 0, sizeof dc->DP.op_tk); dc->DP.draws = dc->DP.ops = 0; return; }
     double per = tk > dc->DP.win_tk ? (double)(ns - dc->DP.win_ns) / (double)(tk - dc->DP.win_tk) : 0;   // ns per tick
     char line[600];
     size_t o = 0;
@@ -1371,9 +1382,23 @@ static void dp_log(DrawCtx *dc) {
         sum += v;
         o += (size_t)snprintf(line + o, sizeof line - o, "%s%s %.0f", i ? ", " : "", dp_name[i], v);
     }
+    // Per op kind through vk_exec_op_draw (its own time, without prepare_draw's sections): the top 10 by time.
+    char ol[700];
+    size_t oo = 0;
+    for (int k = 0; k < 10; k++) {
+        int b = -1;
+        for (int i = 0; i < OP_COUNT_; i++)
+            if (dc->DP.op_tk[i] && (b < 0 || dc->DP.op_tk[i] > dc->DP.op_tk[b])) b = i;
+        if (b < 0) break;
+        oo += (size_t)snprintf(ol + oo, sizeof ol - oo, "%s%s %.2f %.0f", k ? ", " : "", nvn_op_name((uint32_t)b),
+                               (double)dc->DP.op_n[b] / (double)dc->DP.draws, dc->DP.op_tk[b] * per / (double)dc->DP.draws);
+        dc->DP.op_tk[b] = 0;   // taken; the window resets them anyway
+    }
+    ol[oo] = 0;
     rt_log("vk_exec: draw profile (%s) over %llu draws (%llu other ops), ns per draw: %s; total %.0f",
            dc->slice ? "slices" : "replay thread", (unsigned long long)dc->DP.draws, (unsigned long long)dc->DP.ops, line, sum);
-    memset(dc->DP.ticks, 0, sizeof dc->DP.ticks);
+    rt_log("vk_exec: draw profile ops (%s): %s", dc->slice ? "slices" : "replay thread", ol);
+    memset(dc->DP.ticks, 0, sizeof dc->DP.ticks), memset(dc->DP.op_n, 0, sizeof dc->DP.op_n), memset(dc->DP.op_tk, 0, sizeof dc->DP.op_tk);
     dc->DP.draws = dc->DP.ops = 0, dc->DP.win_tk = tk, dc->DP.win_ns = ns;
 }
 
@@ -3561,6 +3586,15 @@ static void op_draw(VkExec *ex, const p_draw *d) {
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
+        if (q <= QUAD_MAX && standins.ready) {   // the shared list, shifted to the first vertex by the vertex offset
+            dig_index(dc, standins.qbuf, (uint64_t)first << 32 | q, NULL, 0);   // the digest still tells draws apart
+            vkCmdBindIndexBuffer(ex->cb, standins.qbuf, 0, VK_INDEX_TYPE_UINT32);
+            ex->recorded++;
+            vkCmdDrawIndexed(ex->cb, 6 * q, inst, 0, (int32_t)first, (uint32_t)d->base_instance);
+            ex->recorded++;
+            note_work(ex, 0, (uint64_t)n * inst);
+            return;
+        }
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
         if (!ix) rt_fatal("vk: out of memory");
         for (uint32_t i = 0; i < q; i++) {
@@ -4170,6 +4204,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     for (int i = 0; i < DP_OPS; i++) after += dc->DP.ticks[i];
     uint64_t inside = after >= before ? after - before : 0;   // prepare_draw's sections (a window may have reset them)
     dc->DP.ticks[DP_OPS] += total > inside ? total - inside : 0;
+    if (op < OP_COUNT_) dc->DP.op_n[op]++, dc->DP.op_tk[op] += total > inside ? total - inside : 0;
     dc->DP.ops++;
 }
 
