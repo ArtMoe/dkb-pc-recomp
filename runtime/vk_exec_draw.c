@@ -393,8 +393,19 @@ typedef struct DrawCtx {
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: the frame the full-screen wait budget belongs to, what is left
     struct { int on, filtered; uint64_t filter; unsigned records; } GCL;   // geometry_context_log; on -1: not read yet
     // token_of: slot tokens by texture id, with the pool, slot generation and memory generation they were read under.
-    struct { uint64_t pool, mg, tok; uint32_t id, sg; } tk[256];
+    struct { uint64_t pool, mg, tok; uint32_t id, sg; VkSlotStamp st; } tk[256];
     int slice;                           // a slice thread's context (vk_exec_draw_slice_ctx)
+    // The texture descriptors the context's last graphics build wrote into bind_d, and what they derive from
+    // (tex_repeat): the pipeline (so the same bindings sit at the same places), the sampled handles, the descriptor
+    // context and the generations tex_info keys its memo on, the pass and the attachments in the feedback layout,
+    // which set the image layout. info NULL: none kept.
+    struct {
+        const VkPipeInfo *info;
+        uint64_t serial, pass, h[MAX_DESC];
+        uint32_t gen, ep, sg, nh;
+        int nfbl;
+        VkImage fbl[9];
+    } TR;
 } DrawCtx;
 
 // The replay thread's draw context (VkExec.draw of vk_exec.c's state, and DC_OF of this copy); each helper has its
@@ -1101,6 +1112,9 @@ static uint64_t stage_origin(DrawCtx *dc, const prog_t *p, int nvn_stage) {
 // Each context keeps the tokens while the slot and memory generations stay: a token changes only with a registration or
 // an entry change, which bump vk_texture_slots_gen, or with a remapped pool (vk_mem_gen). A profile on eight threads
 // had 7% of the slices' recording, and then 4% of the submitting thread's replay, waiting for the texture lock here.
+// When the slot generation moved (Bananza registers descriptors all through a frame), the token is checked again without
+// the lock while its own slot was not registered again (vk_texture_slot_token_again); a later profile still had a fifth
+// of the slices' time waiting for the lock in the locked read.
 static uint64_t token_of(const VkExec *ex, uint64_t h) {
     if (!h) return 1;
     DrawCtx *const dc = DC_OF(ex);
@@ -1108,9 +1122,14 @@ static uint64_t token_of(const VkExec *ex, uint64_t h) {
     uint32_t sg = vk_texture_slots_gen();
     uint64_t mg = vk_mem_gen();
     typeof(dc->tk[0]) *k = &dc->tk[(id ^ id >> 8) & 255];
-    if (k->tok && k->pool == ex->tex_pool.addr && k->id == (uint32_t)id && k->sg == sg && k->mg == mg) return k->tok;
-    uint64_t t = vk_texture_slot_token(&ex->tex_pool, id);
-    *k = (typeof(*k)){ex->tex_pool.addr, mg, t, (uint32_t)id, sg};
+    if (k->tok && k->pool == ex->tex_pool.addr && k->id == (uint32_t)id && k->mg == mg) {
+        if (k->sg == sg) return k->tok;
+        uint64_t t = vk_texture_slot_token_again(&k->st);
+        if (t) return k->tok = t, k->sg = sg, t;
+    }
+    VkSlotStamp st;
+    uint64_t t = vk_texture_slot_token_stamped(&ex->tex_pool, id, &st);
+    *k = (typeof(*k)){ex->tex_pool.addr, mg, t, (uint32_t)id, sg, st};
     return t;
 }
 
@@ -2549,6 +2568,42 @@ uint32_t vk_exec_draw_digest_end(const VkExec *ex, const uint64_t **d) {
 // The descriptors go into one packed array d, a VkDescSlot per descriptor in binding order, which a set's update
 // template reads directly (VkPipeInfo.tpl); write structs are filled only when a set has no template.
 
+// TOTK_TEX_REPEAT (on by default; ab: on in the B blocks of TOTK_AB only).
+static int tex_repeat_on(void) {
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("TEX_REPEAT", "1");
+    return RT_KNOB_ON(mode);
+}
+
+// 1: the n texture bindings in tp hold the same descriptors as the context's last graphics build wrote, which are still
+// in bind_d. 0: they must be looked up; the key is kept, and the lookups that follow fill bind_d for the next draw. A
+// storage image notes its binding at every lookup, so a draw with any is always looked up. A memo hit of tex_info has no
+// effect either while the epoch stays, which the key holds.
+static int tex_repeat(VkExec *ex, const VkPipeInfo *info, const TexPend *tp, int n) {
+    DrawCtx *const dc = DC_OF(ex);
+    if (!tex_repeat_on()) return dc->TR.info = NULL, 0;
+    uint64_t h[MAX_DESC];
+    uint32_t nh = 0;
+    for (int t = 0; t < n; t++) {
+        if (tp[t].img) return dc->TR.info = NULL, 0;
+        for (uint32_t k = 0; k < tp[t].cnt; k++) {
+            int slot = tp[t].r->slot + (int)k;
+            h[nh++] = slot >= 0 && slot < 128 ? ex->tex[tp[t].st][slot] : 0;
+        }
+    }
+    descriptor_state(ex);   // a new descriptor context bumps descriptor_serial
+    uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();
+    typeof(dc->TR) *k = &dc->TR;
+    if (k->info == info && k->nh == nh && k->serial == dc->descriptor_serial && k->gen == gen && k->ep == ep && k->sg == sg &&
+        k->pass == ex->pass_serial && k->nfbl == ex->nfbl && !memcmp(k->fbl, ex->fbl_img, sizeof(VkImage) * (size_t)ex->nfbl) &&
+        !memcmp(k->h, h, sizeof(uint64_t) * nh))
+        return 1;
+    k->info = info, k->nh = nh, k->serial = dc->descriptor_serial, k->gen = gen, k->ep = ep, k->sg = sg;
+    k->pass = ex->pass_serial, k->nfbl = ex->nfbl;
+    memcpy(k->fbl, ex->fbl_img, sizeof k->fbl), memcpy(k->h, h, sizeof(uint64_t) * nh);
+    return 0;
+}
+
 static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
     DrawCtx *const dc = DC_OF(ex);
     VkWriteDescriptorSet *const w = dc->bind_w;
@@ -2643,6 +2698,18 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             else w[i].pTexelBufferView = &bv[nd];
         }
         nd += cnt;
+    }
+    // A draw with the same pipeline as the last build, the same sampled texture handles and nothing changed that a
+    // texture descriptor derives from finds them in bind_d already: in the hills region of Bananza 3.2.0 four programs
+    // make 70% of the draws in runs of thousands, and TOTK_BIND_STATS put what differs between those draws in the
+    // uniform ranges (58%) and the storage table (16%), in the textures 0.1%. The lookups took 92 ns of a draw's 780
+    // (DKB_DRAW_PROFILE); with the reuse 13.
+    if (ntp && gfx && tex_repeat(ex, info, tp, ntp)) {
+        DP_MARK(DP_SIG);
+        ntp = 0;
+        DP_MARK(DP_TEX);
+    } else if (!ntp || !gfx) {
+        dc->TR.info = NULL;   // this build writes bind_d without texture lookups: nothing in it is the last build's any more
     }
     if (ntp) {
         // tex_info looks up with the texture lock held: once for the draw's texture bindings. A slice of a parallel pass
@@ -4020,7 +4087,7 @@ void vk_exec_draw_rebase(VkExec *ex) {
     DrawCtx *const dc = DC_OF(ex);
     dc->bind_gen++;
     for (int i = 0; i < 6; i++) dc->ssbo_serial[i]++;
-    dc->SM.valid = 0, dc->PM.valid = 0;
+    dc->SM.valid = 0, dc->PM.valid = 0, dc->TR.info = NULL;
     vk_exec_draw_new_cb(ex);
 }
 
