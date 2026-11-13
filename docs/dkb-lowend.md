@@ -88,8 +88,13 @@ Build 89645fc (warm cache):
 - Tried and dropped: a background thread that imported every lazy pool older than 2 s. The worst frame fell from
   about 750 ms to 350 ms, but the import time rose from 1.5 s to 5.7 s, held the pool lock the guest's threads wait on,
   and the run got worse overall: 47.1 and 49.1 fps against 52.7 and 53.6, a 1% low of 9.4 and 10.6 against 25.6 and
-  27.8, and 29 to 32 frames over 100 ms against 4 to 5. Fewer imports, not earlier ones, is the direction left: one
-  import covering many small neighbouring pools.
+  27.8, and 29 to 32 frames over 100 ms against 4 to 5.
+- Merging neighbouring pools into one import was ruled out by measurement (the census line "imports took", new
+  defaults, 13 November). At frame 1800, 717 lazy imports took 431 ms in all, about 0.6 ms each: 301 ms in
+  `vkAllocateMemory` and 129 ms committing and touching the pages. The cost follows the size, not the number of calls:
+  a single 450 MiB pool took 114 ms of `vkAllocateMemory` in the 485 ms worst frame (1753). 541 of the 711 used pools
+  start within 1 MiB of the previous one, but joining small pools would not shrink the large ones. What is left to try
+  is importing only the part of a large pool the GPU uses.
 
 Defaults chosen from these runs (13 November, build of bananza with the pre-import dropped, warm cache, two runs each):
 
