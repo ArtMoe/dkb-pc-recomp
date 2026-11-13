@@ -1,6 +1,8 @@
 # Recording the replay on several threads
 
-Status: plan, stage 1 done (measurements and descriptor pools). Branch `claude/parallel-replay`.
+Status: in bananza since pull request 195 (`TOTK_REPLAY_THREADS`, off by default): big passes are recorded in slices
+by up to 16 threads, each with a draw context of its own (pull request 190). The sections below follow the work in the
+order it was done; the plan at the end is the first one and is kept for the record.
 
 ## Why
 
@@ -346,3 +348,12 @@ submission, the game's threads waiting 4.9 ms a frame on fences, GPU 10.5 ms); n
 
 Each stage is a commit that keeps the game working; stage 3 onward is checked in game on the RX 9070 XT before the
 next starts.
+
+### DLSS (after pull request 195)
+
+With `upscaler = dlss`, `par_start` refused every pass, because `vk_dlss.c` notes the scene's depth and camera at the
+first scene draw of a pass, on the replaying thread. With `TOTK_REPLAY_THREADS` set the helpers took no run either,
+so a DLSS player got neither: Zorkats measured 11.6-12.5 fps with eight threads against 14.5 off and 23.5-24.5 with
+the helpers (RTX 3060 Ti, Hilltop). The collection now notes the scene itself (`par_take`, from `X` with the draw's
+targets and binds, in draw order), the slices skip that note, and the jitter they read sets `J.used` atomically. The
+log names the remaining refusals (an armed dump, a pass that did not open again) instead of "not refused".

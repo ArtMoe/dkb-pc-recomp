@@ -51,7 +51,8 @@ static _Thread_local int x_here;   // this thread is inside vk_exec_record (vk_e
 #define PAR_SLICE_MIN 48       // the smallest: below it a slice's fixed costs (a copy of X, cold memos) weigh too much
 #define PAR_EXPECT 1024        // draws of each piece of a target set the last time (par_expect)
 #define PAR_HIST 256
-enum { PAR_WHY_UNSEEN, PAR_WHY_NONE, PAR_WHY_NEW, PAR_WHY_SMALL, PAR_WHY_BANNED, PAR_WHY_NOATT, PAR_WHY_QUERY };
+enum { PAR_WHY_UNSEEN, PAR_WHY_NONE, PAR_WHY_NEW, PAR_WHY_SMALL, PAR_WHY_BANNED, PAR_WHY_NOATT, PAR_WHY_QUERY, PAR_WHY_DUMP,
+       PAR_WHY_NOPASS };
 #define PAR_BAN_AFTER 8   // hazards after which a target set is not sliced again
 
 typedef struct { uint64_t sig; uint32_t draws; uint8_t banned; } ParHist;
@@ -784,7 +785,8 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL,
                           .flags = pass_secondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0};
     vkCmdBeginRendering(ex->cb, &ri);
-    pass_draws = 0, pass_tried = 0, pass_sliced = pass_secondary, pass_why = PAR_WHY_UNSEEN;
+    // The replay thread's pass bookkeeping (par_start, vk_exec_pass_end): a helper's part opens passes of its own.
+    if (ex == &X) pass_draws = 0, pass_tried = 0, pass_sliced = pass_secondary, pass_why = PAR_WHY_UNSEEN;
     FRAME->passes++;
     ex->recorded++;
     ex->in_pass = 1;
@@ -801,7 +803,8 @@ void vk_exec_pass_end(VkExec *ex) {
         static int told;
         if (par_mode > 0 && !pass_sliced && pass_draws >= PAR_SLICE_DRAWS && (told < 24 || told % 1000 == 0 || !++told)) {
             static const char *const why[] = {"no direct draw reached par_start", "not refused", "targets not seen before",
-                                              "targets drew little before", "banned", "no attachment", "queries"};
+                                              "targets drew little before", "banned", "no attachment", "queries",
+                                              "a dump is armed", "the pass did not open again"};
             ParHist *h = par_find(sig, 0);
             told++;   // the first 24, then one in a thousand
             rt_log("vk: a pass of %u draws was not sliced: %s (targets %016llx, slot %u, kept count %u, slot holds %016llx)",
@@ -1862,11 +1865,12 @@ static int par_start(VkExec *ex) {
     // again below. One look per pass. Disabled rendering does not matter: the slices skip their draws as the walk would.
     if (!par_mode || ex != &X || (ex->in_pass && pass_tried)) return 0;
     pass_tried = 1, pass_why = PAR_WHY_NONE;
-    if (vk_dlss_wanted()) return 0;   // vk_dlss.c notes the scene pass from its draws, on the replaying thread
+    // DLSS is not a reason to stay unsliced: the collection notes the scene from the collected draws on this thread
+    // (par_take), and the slices only read the jitter.
     if (vk_dump_armed) {   // the dump follows draws one by one, on one thread
         static int told;
-        if (!told++) rt_log("vk: TOTK_DUMP is set: no pass is sliced in this run (TOTK_REPLAY_THREADS has no effect)");
-        return 0;
+        if (!told++) rt_log("vk: TOTK_DUMP is armed: passes are not sliced while it dumps");
+        return pass_why = PAR_WHY_DUMP, 0;
     }
     resolve_rt(ex);
     uint64_t sig = par_sig(ex);
@@ -1890,7 +1894,7 @@ static int par_start(VkExec *ex) {
     vk_exec_pass_begin(ex);
     pass_secondary = 0;
     pass_tried = 1;
-    if (!ex->in_pass) return par_no[4]++, vk_exec_oq_pass_ended(ex), 0;
+    if (!ex->in_pass) return pass_why = PAR_WHY_NOPASS, par_no[4]++, vk_exec_oq_pass_ended(ex), 0;
     PC.oq = qopen, PC.oq_flags = qf;
     if (!PC.ops) {
         PC.ops = malloc(sizeof *PC.ops * PAR_MAX_OPS), PC.snap = malloc(sizeof *PC.snap * PAR_MAX_SLICES);
@@ -1931,7 +1935,8 @@ static int par_size(void) {
 }
 
 static int par_take(VkExec *ex, const op_hdr *h, const void *a) {
-    if (PC.nops == PAR_MAX_OPS) return 0;
+    // A dump armed during the collection ends it: the dump follows draws one by one, on this thread.
+    if (PC.nops == PAR_MAX_OPS || vk_dump_armed) return 0;
     switch (h->op) {
     case OP_SET_RT:
         return !memcmp(&ex->rt, a, sizeof ex->rt);   // the same targets again: the pass goes on
@@ -1957,6 +1962,10 @@ static int par_take(VkExec *ex, const op_hdr *h, const void *a) {
         }
         PC.slice_draws++, PC.draws++;
         vk_exec_frame.draws_seen++;
+        // DLSS takes the scene's depth and camera from the first scene draw of a pass, in draw order. The slices are
+        // recorded at once, so the collection notes it here from ex, which has the draw's targets and binds: a draw
+        // the slice later skips (a pipeline still building) may note it, with the same targets and camera.
+        if (ex->depth.image && vk_dlss_wanted()) vk_dlss_scene_draw(ex);
         break;
     default:
         return 0;

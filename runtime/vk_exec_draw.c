@@ -3294,7 +3294,8 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         dc->B.st = s, dc->B.st_valid = 1;
     }
-    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_scene_draw(ex);   // before the jitter in record_fixed
+    // Before the jitter in record_fixed. A slice's draws were noted when the pass was collected (vk_exec.c par_take).
+    if (ex->depth.image && !IN_SLICE(dc) && vk_dlss_wanted()) vk_dlss_scene_draw(ex);
     record_fixed(ex);
     repeat_stats(ex, info);
     DP_MARK(DP_STATE);
@@ -3305,7 +3306,7 @@ static int prepare_draw_impl(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     DP_MARK(DP_VB);
     if (dc->DIG.on) dig_state(dc);
-    if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
+    if (vk_dump_armed && !OFF_MAIN(dc)) vk_dump_draw(ex, &s, p, info);   // the dump is the replay thread's
     vk_exec_oq_draw(ex);
     DP_MARK(DP_TAIL);
     return 1;
